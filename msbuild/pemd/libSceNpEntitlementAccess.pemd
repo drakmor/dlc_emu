@@ -1,0 +1,48 @@
+# pemd
+
+Module: libSceNpEntitlementAccess
+
+Library: libSceNpEntitlementAccess {
+  version: 1
+  stubfile: libSceNpEntitlementAccess_stub
+
+  function: l0MTQHIcH3M
+  function: sceNpEntitlementAccessInitialize
+  function: sceNpEntitlementAccessGetSkuFlag
+  function: sceNpEntitlementAccessGetAddcontEntitlementInfoList
+  function: sceNpEntitlementAccessGetAddcontEntitlementInfo
+  function: sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual
+  function: sceNpEntitlementAccessGetEntitlementKey
+  function: sceNpEntitlementAccessGenerateTransactionId
+  function: sceNpEntitlementAccessRequestConsumeEntitlement
+  function: sceNpEntitlementAccessRequestConsumeUnifiedEntitlement
+  function: sceNpEntitlementAccessRequestConsumeServiceEntitlement
+  function: sceNpEntitlementAccessPollConsumeEntitlement
+  function: sceNpEntitlementAccessRequestConsumableEntitlementInfo
+  function: sceNpEntitlementAccessPollConsumableEntitlementInfo
+  function: sceNpEntitlementAccessRequestUnifiedEntitlementInfo
+  function: sceNpEntitlementAccessPollUnifiedEntitlementInfo
+  function: sceNpEntitlementAccessRequestUnifiedEntitlementInfoList
+  function: sceNpEntitlementAccessPollUnifiedEntitlementInfoList
+  function: sceNpEntitlementAccessRequestServiceEntitlementInfo
+  function: sceNpEntitlementAccessPollServiceEntitlementInfo
+  function: sceNpEntitlementAccessRequestServiceEntitlementInfoList
+  function: sceNpEntitlementAccessPollServiceEntitlementInfoList
+  function: sceNpEntitlementAccessDeleteRequest
+  function: sceNpEntitlementAccessAbortRequest
+  function: sceNpEntitlementAccessGetGameTrialsFlag
+}
+
+Library: libSceNpEntitlementAccessGameTrials {
+  version: 1
+  stubfile: libSceNpEntitlementAccessGameTrials_stub
+
+  function: sceNpEntitlementAccessGetGameTrialsFlag_GameTrials
+}
+
+Library: libSceNpEntitlementAccessPft {
+  version: 1
+  stubfile: libSceNpEntitlementAccessPft_stub
+
+  function: eDXKe9FndlE
+}

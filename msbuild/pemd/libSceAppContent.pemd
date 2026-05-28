@@ -1,0 +1,86 @@
+# pemd
+
+Module: libSceAppContentUtil
+
+Library: libSceAppContent {
+  version: 1
+  stubfile: libSceAppContent_stub
+
+  function: AS45QoYHjc4
+  function: sceAppContentInitialize
+  function: sceAppContentAppParamGetInt
+  function: sceAppContentGetAddcontInfoList
+  function: sceAppContentGetAddcontInfo
+  function: sceAppContentAddcontMount
+  function: sceAppContentAddcontUnmount
+  function: sceAppContentAddcontEnqueueDownload
+  function: sceAppContentAddcontEnqueueDownloadSp
+  function: sceAppContentGetEntitlementKey
+  function: sceAppContentTemporaryDataMount
+  function: sceAppContentTemporaryDataMount2
+  function: sceAppContentTemporaryDataUnmount
+  function: sceAppContentTemporaryDataFormat
+  function: sceAppContentDownloadDataFormat
+  function: sceAppContentTemporaryDataGetAvailableSpaceKb
+  function: sceAppContentDownloadDataGetAvailableSpaceKb
+  function: sceAppContentAddcontDelete
+  function: sceAppContentGetRegion
+  function: sceAppContentRequestPatchInstall
+  function: sceAppContentAppParamGetString
+  function: sceAppContentAddcontShrink
+  function: sceAppContentGetAddcontDownloadProgress
+  function: sceAppContentDownload0Shrink
+  function: sceAppContentDownload0Expand
+  function: sceAppContentDownload1Shrink
+  function: sceAppContentDownload1Expand
+  function: UO-gD-XFyGE
+  function: MFUAprB41fA
+  function: sceAppContentDownloadDataGetBlockSize
+  function: y8meQn-Qy5c
+  function: 1saJukIkcKw
+}
+
+Library: libSceAppContentBundle {
+  version: 1
+  stubfile: libSceAppContentBundle_stub
+
+  function: xZo2-418Wdo
+}
+
+Library: libSceAppContentGameTrials {
+  version: 1
+  stubfile: libSceAppContentGameTrials_stub
+
+  function: sceAppContentRaw_1saJukIkcKw_GameTrials
+}
+
+Library: libSceAppContentIro {
+  version: 1
+  stubfile: libSceAppContentIro_stub
+
+  function: sceAppContentGetAddcontInfoByEntitlementId
+  function: sceAppContentGetAddcontInfoListByIroTag
+  function: sceAppContentAddcontEnqueueDownloadByEntitlemetId
+  function: sceAppContentAddcontMountByEntitlemetId
+}
+
+Library: libSceAppContentMdid {
+  version: 1
+  stubfile: libSceAppContentMdid_stub
+
+  function: SWVxsi-ZBlw
+}
+
+Library: libSceAppContentPft {
+  version: 1
+  stubfile: libSceAppContentPft_stub
+
+  function: sceAppContentGetPftFlag
+}
+
+Library: libSceAppContentSc {
+  version: 1
+  stubfile: libSceAppContentSc_stub
+
+  function: sceAppContentGetDownloadedStoreCountry
+}
