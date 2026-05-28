@@ -1,8 +1,3 @@
-/*
- * SDK 2.000 includes _fs.h from kernel.h using the SDK directory first. Keep
- * the duplicate-member workaround active while the real kernel.h is parsed.
- */
-
 #pragma once
 
 #define SCE_DLC_EMU_JOIN2(a, b) a##b
