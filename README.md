@@ -45,13 +45,23 @@ Supported parameters:
 | `service_label` | unset | Optional 1-6 alphanumeric label for service entitlement APIs. |
 | `use_count` | `0` | Initial consumable/service/unified use counter. |
 | `use_limit` | `1` | Maximum consumable use count. |
-| `consumable` | `true` for `[PSCONS]`/`[PSVC]` | Enables consume requests and controls `isConsumable`. |
+| `consumable` | `true` for `[PSCONS]`/`[PSVC]` | Returned as `isConsumable` in service entitlement info and controls whether consume requests are accepted and increment `use_count`.  |
 | `active_flag` | `true` | Returned entitlement active flag. |
 | `active_date` | `0` | `SceRtcTick.tick` active date. |
 | `inactive_date` | `18446744073709551615` | `SCE_NP_ENTITLEMENT_ACCESS_INVALID_DATE`. |
 
 Supported sections: `[NONE]`, `[PSGD]`, `[PSAC]`, `[PSAL]`, `[PSCONS]`,
 `[PSVC]`, `[PSSUBS]`.
+
+| Section | Number | Typical use |
+| --- | ---: | --- |
+| `[NONE]` | 0 | No package-type filtering. |
+| `[PSGD]` | 1 | Game data entitlement type. |
+| `[PSAC]` | 2 | Additional content with optional file data. |
+| `[PSAL]` | 3 | Add-on/license-style package type. |
+| `[PSCONS]` | 4 | Consumable or product entitlement style used by some titles for deluxe/unlock checks. |
+| `[PSVC]` | 5 | Virtual currency style entitlement. |
+| `[PSSUBS]` | 6 | Subscription style entitlement. |
 
 ## Notes
 
