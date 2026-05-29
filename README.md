@@ -17,7 +17,7 @@ The modules read `/app0/dlc_emu.ini` lazily on the first DLC-related API call.
 If the file is missing, invalid, or contains no valid entries, fake DLC APIs
 return empty/no-entitlement style results.
 
-Minimal example:
+Example:
 
 ```ini
 # Complete DLC overlay example for /app0/dlc_emu.ini
