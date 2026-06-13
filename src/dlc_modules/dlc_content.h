@@ -9,6 +9,7 @@
 #include "dlc_config.h"
 
 #include <app_content.h>
+#include <libgameupdate.h>
 #include <np/np_entitlement_access.h>
 #include <np/np_common.h>
 
@@ -96,17 +97,17 @@ int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadSp(SceNpServiceLabel serviceLa
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadByEntitlemetId(const char* entitlementId);
 int32_t dlcEmu_sceAppContentAddcontShrink(SceNpServiceLabel serviceLabel,
                                                 const SceNpUnifiedEntitlementLabel* entitlementLabel);
-int32_t dlcEmu_sceAppContentRaw_xZo2_418Wdo(
+int32_t dlcEmu_sceAppContentCheckBundleLicenseOnDisc(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel);
-int32_t dlcEmu_sceAppContentRaw_UO_gD_XFyGE(const SceAppContentMountPoint* mountPoint);
-int32_t dlcEmu_sceAppContentRaw_MFUAprB41fA(const SceAppContentMountPoint* mountPoint);
-int32_t dlcEmu_sceAppContentRaw_y8meQn_Qy5c(
+int32_t dlcEmu_sceAppContentDownload2Shrink(const void* downloadHandle);
+int32_t dlcEmu_sceAppContentDownload2Expand(const void* downloadHandle);
+int32_t dlcEmu_sceAppContentGetPlayableStatus(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     uint32_t* playableStatus);
-int32_t dlcEmu_sceAppContentRaw_1saJukIkcKw(uint32_t* gameTrialsFlag);
-int32_t dlcEmu_sceAppContentRaw_SWVxsi_ZBlw(const void* input, void* output);
+int32_t dlcEmu_sceAppContentGetGameTrialsFlag(uint32_t* gameTrialsFlag);
+int32_t dlcEmu_sceAppContentUnknownMdid(const void* mdid, bool* matches);
 int32_t dlcEmu_sceAppContentTemporaryDataUnmount(const SceAppContentMountPoint* mountPoint);
 int32_t dlcEmu_sceAppContentTemporaryDataFormat(const SceAppContentMountPoint* mountPoint);
 int32_t dlcEmu_sceAppContentTemporaryDataGetAvailableSpaceKb(
@@ -158,13 +159,13 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceNpEntitlementAccessAddcontEntitlementInfo* info);
-int32_t dlcEmu_sceNpEntitlementAccessRaw_l0MTQHIcH3M(
+int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
     SceUserServiceUserId userId,
     SceNpServiceLabel serviceLabel,
-    void* list,
+    SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
     uint32_t* hitNum);
-int32_t dlcEmu_sceNpEntitlementAccessRaw_eDXKe9FndlE(
+int32_t dlcEmu_sceNpEntitlementAccessGetPftFlag(
     SceNpEntitlementAccessGameTrialsFlag* pftFlag);
 int32_t dlcEmu_sceNpEntitlementAccessGetEntitlementKey(
     SceNpServiceLabel serviceLabel,
@@ -256,4 +257,20 @@ int32_t dlcEmu_sceNpEntitlementAccessPollServiceEntitlementInfoList(
     int32_t* previousOffset);
 int32_t dlcEmu_sceNpEntitlementAccessDeleteRequest(int64_t requestId);
 int32_t dlcEmu_sceNpEntitlementAccessAbortRequest(int64_t requestId);
+
+int32_t dlcEmu_sceGameUpdateInitialize(void);
+int32_t dlcEmu_sceGameUpdateTerminate(void);
+int32_t dlcEmu_sceGameUpdateCreateRequest(void);
+int32_t dlcEmu_sceGameUpdateCheck(int32_t requestId,
+                                  const SceGameUpdateCheckParam* param,
+                                  SceGameUpdateCheckResult* result);
+int32_t dlcEmu_sceGameUpdateCheckTitle(int32_t requestId,
+                                       uint32_t serviceLabel,
+                                       SceGameUpdateCheckResult* result);
+int32_t dlcEmu_sceGameUpdateAbortRequest(int32_t requestId);
+int32_t dlcEmu_sceGameUpdateDeleteRequest(int32_t requestId);
+int32_t dlcEmu_sceGameUpdateGetAddcontLatestVersion(
+    SceNpServiceLabel serviceLabel,
+    const SceNpUnifiedEntitlementLabel* entitlementLabel,
+    SceGameUpdateAddcontVersionInfo* info);
 }

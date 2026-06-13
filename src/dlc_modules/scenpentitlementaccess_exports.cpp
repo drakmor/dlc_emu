@@ -35,17 +35,13 @@ int32_t check_initialized() {
 
 extern "C" {
 
-DLC_EXPORT int32_t sceNpEntitlementAccessGetGameTrialsFlag_GameTrials(
-    SceNpEntitlementAccessGameTrialsFlag* gameTrialsFlag);
-
-DLC_EXPORT int32_t sceNpEntitlementAccessRaw_l0MTQHIcH3M(
+DLC_EXPORT int32_t sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
     SceUserServiceUserId userId,
     SceNpServiceLabel serviceLabel,
-    void* list,
+    SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
-    uint32_t* hitNum) __asm__("l0MTQHIcH3M");
-DLC_EXPORT int32_t sceNpEntitlementAccessRaw_eDXKe9FndlE(
-    SceNpEntitlementAccessGameTrialsFlag* pftFlag) __asm__("eDXKe9FndlE");
+    uint32_t* hitNum);
+DLC_EXPORT int32_t sceNpEntitlementAccessGetPftFlag(SceNpEntitlementAccessGameTrialsFlag* pftFlag);
 
 static void __attribute__((constructor)) sceNpEntitlementAccessDlcInit(void) {
     dlcEmu_prewarmNpRpc();
@@ -118,16 +114,16 @@ DLC_EXPORT int32_t sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
         info));
 }
 
-DLC_EXPORT int32_t sceNpEntitlementAccessRaw_l0MTQHIcH3M(
+DLC_EXPORT int32_t sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
     SceUserServiceUserId userId,
     SceNpServiceLabel serviceLabel,
-    void* list,
+    SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
     uint32_t* hitNum) {
     if (userId == static_cast<SceUserServiceUserId>(-1)) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
-    DLC_NP_CALL(dlcEmu_sceNpEntitlementAccessRaw_l0MTQHIcH3M(
+    DLC_NP_CALL(dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
         userId,
         serviceLabel,
         list,
@@ -342,14 +338,9 @@ DLC_EXPORT int32_t sceNpEntitlementAccessGetGameTrialsFlag(
     DLC_NP_CALL(dlcEmu_sceNpEntitlementAccessGetGameTrialsFlag(gameTrialsFlag));
 }
 
-DLC_EXPORT int32_t sceNpEntitlementAccessGetGameTrialsFlag_GameTrials(
-    SceNpEntitlementAccessGameTrialsFlag* gameTrialsFlag) {
-    return sceNpEntitlementAccessGetGameTrialsFlag(gameTrialsFlag);
-}
-
-DLC_EXPORT int32_t sceNpEntitlementAccessRaw_eDXKe9FndlE(
+DLC_EXPORT int32_t sceNpEntitlementAccessGetPftFlag(
     SceNpEntitlementAccessGameTrialsFlag* pftFlag) {
-    DLC_NP_CALL(dlcEmu_sceNpEntitlementAccessRaw_eDXKe9FndlE(pftFlag));
+    DLC_NP_CALL(dlcEmu_sceNpEntitlementAccessGetPftFlag(pftFlag));
 }
 
 } // extern "C"

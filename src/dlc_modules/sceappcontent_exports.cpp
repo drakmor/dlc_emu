@@ -36,20 +36,17 @@ int32_t check_initialized() {
 extern "C" {
 
 DLC_EXPORT void sceAppContentRaw_AS45QoYHjc4(void) __asm__("AS45QoYHjc4");
-DLC_EXPORT int32_t sceAppContentRaw_xZo2_418Wdo(
+DLC_EXPORT int32_t sceAppContentCheckBundleLicenseOnDisc(
     SceNpServiceLabel serviceLabel,
-    const SceNpUnifiedEntitlementLabel* entitlementLabel) __asm__("xZo2-418Wdo");
-DLC_EXPORT int32_t sceAppContentRaw_UO_gD_XFyGE(
-    const SceAppContentMountPoint* mountPoint) __asm__("UO-gD-XFyGE");
-DLC_EXPORT int32_t sceAppContentRaw_MFUAprB41fA(
-    const SceAppContentMountPoint* mountPoint) __asm__("MFUAprB41fA");
-DLC_EXPORT int32_t sceAppContentRaw_y8meQn_Qy5c(
+    const SceNpUnifiedEntitlementLabel* entitlementLabel);
+DLC_EXPORT int32_t sceAppContentDownload2Shrink(const void* downloadHandle);
+DLC_EXPORT int32_t sceAppContentDownload2Expand(const void* downloadHandle);
+DLC_EXPORT int32_t sceAppContentGetPlayableStatus(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
-    uint32_t* playableStatus) __asm__("y8meQn-Qy5c");
-DLC_EXPORT int32_t sceAppContentRaw_1saJukIkcKw(uint32_t* gameTrialsFlag) __asm__("1saJukIkcKw");
-DLC_EXPORT int32_t sceAppContentRaw_1saJukIkcKw_GameTrials(uint32_t* gameTrialsFlag);
-DLC_EXPORT int32_t sceAppContentRaw_SWVxsi_ZBlw(const void* input, void* output) __asm__("SWVxsi-ZBlw");
+    uint32_t* playableStatus);
+DLC_EXPORT int32_t sceAppContentGetGameTrialsFlag(uint32_t* gameTrialsFlag);
+DLC_EXPORT int32_t sceAppContentRaw_SWVxsi_ZBlw(const void* mdid, bool* matches) __asm__("SWVxsi-ZBlw");
 
 static void __attribute__((constructor)) sceAppContentDlcInit(void) {
     dlcEmu_prewarmAppRpc();
@@ -212,10 +209,10 @@ DLC_EXPORT int32_t sceAppContentAddcontShrink(
     DLC_APP_CALL(dlcEmu_sceAppContentAddcontShrink(serviceLabel, entitlementLabel));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_xZo2_418Wdo(
+DLC_EXPORT int32_t sceAppContentCheckBundleLicenseOnDisc(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_xZo2_418Wdo(serviceLabel, entitlementLabel));
+    DLC_APP_CALL(dlcEmu_sceAppContentCheckBundleLicenseOnDisc(serviceLabel, entitlementLabel));
 }
 
 DLC_EXPORT int32_t sceAppContentGetAddcontDownloadProgress(
@@ -225,12 +222,12 @@ DLC_EXPORT int32_t sceAppContentGetAddcontDownloadProgress(
     DLC_APP_CALL(dlcEmu_sceAppContentGetAddcontDownloadProgress(serviceLabel, entitlementLabel, progress));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_UO_gD_XFyGE(const SceAppContentMountPoint* mountPoint) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_UO_gD_XFyGE(mountPoint));
+DLC_EXPORT int32_t sceAppContentDownload2Shrink(const void* downloadHandle) {
+    DLC_APP_CALL(dlcEmu_sceAppContentDownload2Shrink(downloadHandle));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_MFUAprB41fA(const SceAppContentMountPoint* mountPoint) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_MFUAprB41fA(mountPoint));
+DLC_EXPORT int32_t sceAppContentDownload2Expand(const void* downloadHandle) {
+    DLC_APP_CALL(dlcEmu_sceAppContentDownload2Expand(downloadHandle));
 }
 
 DLC_EXPORT int32_t sceAppContentDownload0Shrink(const SceAppContentMountPoint* mountPoint) {
@@ -258,23 +255,19 @@ DLC_EXPORT int32_t sceAppContentGetPftFlag(SceAppContentPftFlag* pftFlag) {
     DLC_APP_CALL(dlcEmu_sceAppContentGetPftFlag(pftFlag));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_y8meQn_Qy5c(
+DLC_EXPORT int32_t sceAppContentGetPlayableStatus(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     uint32_t* playableStatus) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_y8meQn_Qy5c(serviceLabel, entitlementLabel, playableStatus));
+    DLC_APP_CALL(dlcEmu_sceAppContentGetPlayableStatus(serviceLabel, entitlementLabel, playableStatus));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_1saJukIkcKw(uint32_t* gameTrialsFlag) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_1saJukIkcKw(gameTrialsFlag));
+DLC_EXPORT int32_t sceAppContentGetGameTrialsFlag(uint32_t* gameTrialsFlag) {
+    DLC_APP_CALL(dlcEmu_sceAppContentGetGameTrialsFlag(gameTrialsFlag));
 }
 
-DLC_EXPORT int32_t sceAppContentRaw_1saJukIkcKw_GameTrials(uint32_t* gameTrialsFlag) {
-    return sceAppContentRaw_1saJukIkcKw(gameTrialsFlag);
-}
-
-DLC_EXPORT int32_t sceAppContentRaw_SWVxsi_ZBlw(const void* input, void* output) {
-    DLC_APP_CALL(dlcEmu_sceAppContentRaw_SWVxsi_ZBlw(input, output));
+DLC_EXPORT int32_t sceAppContentRaw_SWVxsi_ZBlw(const void* mdid, bool* matches) {
+    DLC_APP_CALL(dlcEmu_sceAppContentUnknownMdid(mdid, matches));
 }
 
 } // extern "C"

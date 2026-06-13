@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <cstring>
 
-extern "C" void sceKernelDebugOutText(int dbg_channel, const char* text);
+extern "C" __attribute__((weak)) void sceKernelDebugOutText(int dbg_channel, const char* text);
 
 namespace {
 constexpr int kLogMode = 0666;
@@ -43,7 +43,9 @@ void dlc_logf(const char* fmt, ...) {
     }
 
 #if SCE_DLC_EMU_LOG_KERNEL_OUT
-    sceKernelDebugOutText(0, line);
+    if (sceKernelDebugOutText) {
+        sceKernelDebugOutText(0, line);
+    }
 #endif
 
     const int fd = sceKernelOpen(SCE_DLC_EMU_LOG_PATH,

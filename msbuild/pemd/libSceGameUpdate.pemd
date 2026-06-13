@@ -1,0 +1,17 @@
+# pemd
+
+Module: libSceGameUpdate
+
+Library: libSceGameUpdate {
+  version: 1
+  stubfile: libSceGameUpdate_stub
+
+  function: sceGameUpdateInitialize
+  function: sceGameUpdateTerminate
+  function: sceGameUpdateCreateRequest
+  function: sceGameUpdateCheck
+  function: sceGameUpdateAbortRequest
+  function: sceGameUpdateDeleteRequest
+  function: sceGameUpdateGetAddcontLatestVersion
+  function: sceGameUpdateCheckTitle
+}

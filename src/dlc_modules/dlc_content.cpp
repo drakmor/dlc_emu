@@ -27,11 +27,10 @@
 
 namespace {
 
-extern "C" __attribute__((visibility("hidden"))) int Need_sceLibc = 0;
-
 constexpr size_t kMaxDlcEntries = SCE_DLC_EMU_CONTENTIDS_MAX;
 constexpr size_t kMaxConsumeTransactions = 256u;
 constexpr size_t kMaxServiceListRequests = 32u;
+constexpr size_t kMaxGameUpdateRequests = 32u;
 constexpr size_t kMaxIniFileBytes = 32u * 1024u;
 constexpr size_t kIniBufferBytes = kMaxIniFileBytes + 1u;
 constexpr uint64_t kDefaultEntitlementKeyBase = 1024u;
@@ -40,11 +39,13 @@ constexpr int64_t kSyntheticEntryRequestBase = kSyntheticRequestBase + 0x1000000
 constexpr int32_t kNpEntitlementTitleTokenError = -2122514407; // 0x817D0019
 constexpr int64_t kSyntheticServiceListRequestBase = kSyntheticRequestBase + 0x20000000ll;
 constexpr uint32_t kNpReferencePackageTypeMax = 8u;
+static_assert(sizeof(SceNpEntitlementAccessAddcontEntitlementInfo) == 28u);
+static_assert(sizeof(SceGameUpdateCheckParam) == 48u);
+static_assert(sizeof(SceGameUpdateCheckResult) == 48u);
+static_assert(sizeof(SceGameUpdateAddcontVersionInfo) == 48u);
 constexpr uint32_t kAppContentRpcCommandInitialize = 0x20000u;
 constexpr uint32_t kAppContentRpcCommandAppParamGetInt = 0x20001u;
 constexpr uint32_t kAppContentRpcCommandAppParamGetString = 0x20002u;
-constexpr uint32_t kAppContentRpcCommandAddcontEnqueueDownload = 0x20008u;
-constexpr uint32_t kAppContentRpcCommandAddcontEnqueueDownloadSp = 0x20009u;
 constexpr uint32_t kAppContentRpcCommandTemporaryDataMount = 0x2000bu;
 constexpr uint32_t kAppContentRpcCommandTemporaryDataUnmount = 0x2000cu;
 constexpr uint32_t kAppContentRpcCommandTemporaryDataFormat = 0x2000du;
@@ -54,22 +55,12 @@ constexpr uint32_t kAppContentRpcCommandDownloadDataGetBlockSize = 0x20010u;
 constexpr uint32_t kAppContentRpcCommandGetRegion = 0x20012u;
 constexpr uint32_t kAppContentRpcCommandRequestPatchInstall = 0x20013u;
 constexpr uint32_t kAppContentRpcCommandGetDownloadedStoreCountry = 0x20014u;
-constexpr uint32_t kAppContentRpcCommandAddcontEnqueueDownloadByEntitlementId = 0x20017u;
-constexpr uint32_t kAppContentRpcCommandAddcontShrink = 0x2001cu;
-constexpr uint32_t kAppContentRpcCommandGetAddcontDownloadProgress = 0x2001du;
-constexpr uint32_t kAppContentRpcCommandRawXZo2 = 0x2001eu;
 constexpr uint32_t kAppContentRpcCommandDownload0Shrink = 0x2001fu;
 constexpr uint32_t kAppContentRpcCommandDownload0Expand = 0x20020u;
 constexpr uint32_t kAppContentRpcCommandDownload1Shrink = 0x20021u;
 constexpr uint32_t kAppContentRpcCommandDownload1Expand = 0x20022u;
-constexpr uint32_t kAppContentRpcCommandRawUO = 0x20023u;
-constexpr uint32_t kAppContentRpcCommandRawMFU = 0x20024u;
-constexpr uint32_t kAppContentRpcCommandGetPftFlag = 0x20025u;
-constexpr uint32_t kAppContentRpcCommandRawY8me = 0x20026u;
-constexpr uint32_t kAppContentRpcCommandRaw1sa = 0x20027u;
-constexpr uint32_t kAppContentRpcCommandRawSWV = 0x20028u;
-constexpr uint32_t kNpRpcCommandRawEDX = 0x20015u;
-constexpr uint32_t kNpRpcCommandGameTrials = 0x20016u;
+constexpr uint32_t kAppContentRpcCommandDownload2Shrink = 0x20023u;
+constexpr uint32_t kAppContentRpcCommandDownload2Expand = 0x20024u;
 
 class DlcMutex {
 public:
@@ -125,6 +116,7 @@ struct DlcEntry {
 
 struct ParsedDlcEntry {
     char contentId[128]{};
+    char label[128]{};
     char serviceLabel[128]{};
     char mountPoint[128]{};
     char keyHex[128]{};
@@ -177,10 +169,25 @@ struct DlcState {
     uint64_t serviceListRequestNext{1};
 };
 
+enum class GameUpdateRequestState : uint8_t {
+    Free,
+    Active,
+    Aborted,
+};
+
+struct GameUpdateState {
+    DlcMutex mutex;
+    bool initialized{false};
+    int32_t nextRequestId{1};
+    int32_t requestIds[kMaxGameUpdateRequests]{};
+    GameUpdateRequestState requests[kMaxGameUpdateRequests]{};
+};
+
 alignas(DlcState) unsigned char g_stateStorage[sizeof(DlcState)];
 std::atomic<DlcState*> g_state{nullptr};
 std::atomic<uint32_t> g_stateInit{0};
 std::atomic<uint64_t> g_transactionCounter{0};
+GameUpdateState g_gameUpdateState;
 
 struct IpcBuffer {
     void* data;
@@ -387,11 +394,11 @@ int32_t app_rpc_invoke(uint32_t command,
     return invokeRc == SCE_OK ? map_app_rpc_result(serviceResult) : map_app_rpc_result(invokeRc);
 }
 
-int32_t np_rpc_invoke(uint32_t command,
-                      const IpcBuffer* input,
-                      uint32_t inputCount,
-                      IpcBuffer* output,
-                      uint32_t outputCount) {
+[[maybe_unused]] int32_t np_rpc_invoke(uint32_t command,
+                                       const IpcBuffer* input,
+                                       uint32_t inputCount,
+                                       IpcBuffer* output,
+                                       uint32_t outputCount) {
     DlcLockGuard lock(g_npRpc.mutex);
     if (!ensure_np_rpc_unlocked()) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_INTERNAL;
@@ -420,62 +427,9 @@ int32_t app_rpc_initialize(const SceAppContentInitParam* initParam,
                           1);
 }
 
-int32_t app_rpc_entitlement_command(uint32_t command,
-                                    SceNpServiceLabel serviceLabel,
-                                    const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    AppContentRpcControl control{static_cast<uint32_t>(serviceLabel), 0};
-    IpcBuffer inputs[2] = {
-        {&control, sizeof(control.value)},
-        {const_cast<SceNpUnifiedEntitlementLabel*>(entitlementLabel), sizeof(*entitlementLabel)}
-    };
-    return app_rpc_invoke(command, inputs, 2, nullptr, 0);
-}
-
-int32_t app_rpc_entitlement_progress(uint32_t command,
-                                     SceNpServiceLabel serviceLabel,
-                                     const SceNpUnifiedEntitlementLabel* entitlementLabel,
-                                     SceAppContentAddcontDownloadProgress* progress) {
-    AppContentRpcControl control{static_cast<uint32_t>(serviceLabel), 0};
-    IpcBuffer inputs[2] = {
-        {&control, sizeof(control.value)},
-        {const_cast<SceNpUnifiedEntitlementLabel*>(entitlementLabel), sizeof(*entitlementLabel)}
-    };
-    IpcBuffer outputs[1] = {{progress, sizeof(*progress)}};
-    return app_rpc_invoke(command, inputs, 2, outputs, 1);
-}
-
-int32_t app_rpc_entitlement_id_command(uint32_t command, const char* entitlementId) {
-    char buffer[40]{};
-    strlcpy(buffer, entitlementId, sizeof(buffer));
-    IpcBuffer inputs[1] = {{buffer, sizeof(buffer)}};
-    return app_rpc_invoke(command, inputs, 1, nullptr, 0);
-}
-
-int32_t app_rpc_playable_status(SceNpServiceLabel serviceLabel,
-                                const SceNpUnifiedEntitlementLabel* entitlementLabel,
-                                uint32_t* playableStatus) {
-    AppContentRpcControl control{static_cast<uint32_t>(serviceLabel), 0};
-    IpcBuffer inputs[2] = {
-        {&control, sizeof(control.value)},
-        {const_cast<SceNpUnifiedEntitlementLabel*>(entitlementLabel), sizeof(*entitlementLabel)}
-    };
-    IpcBuffer outputs[1] = {{playableStatus, sizeof(*playableStatus)}};
-    return app_rpc_invoke(kAppContentRpcCommandRawY8me,
-                          inputs,
-                          2,
-                          outputs,
-                          1);
-}
-
 int32_t app_rpc_u32_output(uint32_t command, uint32_t* value) {
     IpcBuffer outputs[1] = {{value, sizeof(*value)}};
     return app_rpc_invoke(command, nullptr, 0, outputs, 1);
-}
-
-int32_t app_rpc_blob16_output1(uint32_t command, const void* input, void* output) {
-    IpcBuffer inputs[1] = {{const_cast<void*>(input), 16u}};
-    IpcBuffer outputs[1] = {{output, 1u}};
-    return app_rpc_invoke(command, inputs, 1, outputs, 1);
 }
 
 int32_t app_rpc_control_output(uint32_t command, uint32_t value, void* output, uint64_t outputSize) {
@@ -528,15 +482,10 @@ int32_t app_rpc_mount_query(uint32_t command,
     return app_rpc_invoke(command, inputs, 2, outputs, 1);
 }
 
-int32_t app_rpc_mount_handle_command(uint32_t command, const SceAppContentMountPoint* mountPoint) {
-    uint64_t handle = reinterpret_cast<uint64_t>(mountPoint);
+int32_t app_rpc_mount_handle_command(uint32_t command, const void* downloadHandle) {
+    uint64_t handle = reinterpret_cast<uint64_t>(downloadHandle);
     IpcBuffer input[1] = {{&handle, sizeof(handle)}};
     return app_rpc_invoke(command, input, 1, nullptr, 0);
-}
-
-int32_t np_rpc_u32_output(uint32_t command, uint32_t* value) {
-    IpcBuffer outputs[1] = {{value, sizeof(*value)}};
-    return np_rpc_invoke(command, nullptr, 0, outputs, 1);
 }
 
 const char* package_type_name(uint32_t packageType) {
@@ -565,7 +514,8 @@ const char* download_status_name(uint32_t status) {
 }
 
 bool package_type_supports_mount(uint32_t packageType) {
-    return packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAC;
+    return packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAC ||
+           packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAL;
 }
 
 void format_key_hex(const uint8_t key[16], char out[33]) {
@@ -862,6 +812,8 @@ private:
     static void read_entry_field(ParsedDlcEntry& parsed, const char* key, const char* value) {
         if (key_equals(key, "content_id")) {
             if (!copy_value(parsed.contentId, sizeof(parsed.contentId), value)) invalidate(parsed, "content_id");
+        } else if (key_equals(key, "label") || key_equals(key, "entitlement_label")) {
+            if (!copy_value(parsed.label, sizeof(parsed.label), value)) invalidate(parsed, "label");
         } else if (key_equals(key, "service_label")) {
             if (!copy_value(parsed.serviceLabel, sizeof(parsed.serviceLabel), value)) invalidate(parsed, "service_label");
         } else if (key_equals(key, "mount_point")) {
@@ -899,6 +851,16 @@ private:
             if (!std::isalnum(static_cast<unsigned char>(*p))) return false;
         }
         *label = dash + 1;
+        return true;
+    }
+
+    static bool valid_unified_label_text(const char* label) {
+        if (!label || !label[0]) return false;
+        const size_t len = std::strlen(label);
+        if (len >= sizeof(SceNpUnifiedEntitlementLabel{}.data)) return false;
+        for (const char* p = label; *p; ++p) {
+            if (!std::isalnum(static_cast<unsigned char>(*p))) return false;
+        }
         return true;
     }
 
@@ -958,9 +920,16 @@ private:
             dlc_logf("dlc.entry skip reason=max contentId=%s", contentId ? contentId : "<null>");
             return;
         }
-        const char* label = nullptr;
-        if (!valid_content_id(contentId, &label)) {
+        const char* contentLabel = nullptr;
+        if (!valid_content_id(contentId, &contentLabel)) {
             dlc_logf("dlc.entry skip reason=bad-content-id contentId=%s", contentId ? contentId : "<null>");
+            return;
+        }
+        const char* label = parsed.label[0] ? parsed.label : contentLabel;
+        if (!valid_unified_label_text(label)) {
+            dlc_logf("dlc.entry skip reason=bad-label contentId=%s label=%s",
+                     contentId ? contentId : "<null>",
+                     label ? label : "<null>");
             return;
         }
         if (label_exists(st, label)) {
@@ -1192,6 +1161,17 @@ bool copy_entry_by_identifier(const char* identifier, DlcEntry* out, size_t* ind
     return false;
 }
 
+bool copy_active_entry_by_label(const SceNpUnifiedEntitlementLabel* label,
+                                DlcEntry* out,
+                                size_t* indexOut = nullptr) {
+    DlcEntry entry{};
+    size_t index = 0;
+    if (!copy_entry_by_label(label, &entry, &index) || !entry.activeFlag) return false;
+    if (out) *out = entry;
+    if (indexOut) *indexOut = index;
+    return true;
+}
+
 bool copy_entry_by_service_label(const SceNpServiceEntitlementLabel* label,
                                  DlcEntry* out,
                                  size_t* indexOut = nullptr) {
@@ -1328,20 +1308,55 @@ void fill_np_info(const DlcEntry& entry, SceNpEntitlementAccessAddcontEntitlemen
     info->downloadStatus = entry.status;
 }
 
-void fill_np_raw_addcont_info(const DlcEntry& entry, void* info) {
-    if (!info) return;
-    constexpr size_t kRawInfoSize = 40u;
-    std::memset(info, 0, kRawInfoSize);
-    SceNpEntitlementAccessAddcontEntitlementInfo publicInfo{};
-    fill_np_info(entry, &publicInfo);
-    std::memcpy(info, &publicInfo, sizeof(publicInfo));
-}
-
 void fill_app_info(const DlcEntry& entry, SceAppContentAddcontInfo* info) {
     if (!info) return;
     std::memset(info, 0, sizeof(*info));
     info->entitlementLabel = entry.label;
     info->status = entry.status;
+}
+
+void fill_game_update_no_addcont_latest_version(SceGameUpdateAddcontVersionInfo* info) {
+    if (!info) return;
+    std::memset(info, 0, sizeof(*info));
+    info->size = sizeof(*info);
+    info->found = false;
+}
+
+void fill_game_update_no_update(SceGameUpdateCheckResult* result) {
+    if (!result) return;
+    std::memset(result, 0, sizeof(*result));
+    result->size = sizeof(*result);
+    result->found = false;
+    result->addcontFound = false;
+}
+
+GameUpdateRequestState* find_game_update_request_unlocked(GameUpdateState& st, int32_t requestId) {
+    if (requestId <= 0) return nullptr;
+    for (size_t i = 0; i < kMaxGameUpdateRequests; ++i) {
+        if (st.requests[i] != GameUpdateRequestState::Free && st.requestIds[i] == requestId) {
+            return &st.requests[i];
+        }
+    }
+    return nullptr;
+}
+
+void clear_game_update_requests_unlocked(GameUpdateState& st) {
+    std::memset(st.requestIds, 0, sizeof(st.requestIds));
+    for (auto& request : st.requests) {
+        request = GameUpdateRequestState::Free;
+    }
+}
+
+int32_t allocate_game_update_request_id_unlocked(GameUpdateState& st) {
+    for (size_t attempt = 0; attempt < kMaxGameUpdateRequests + 1u; ++attempt) {
+        int32_t candidate = st.nextRequestId++;
+        if (candidate <= 0) {
+            st.nextRequestId = 2;
+            candidate = 1;
+        }
+        if (!find_game_update_request_unlocked(st, candidate)) return candidate;
+    }
+    return 0;
 }
 
 void fill_unified_info(const DlcEntry& entry, SceNpEntitlementAccessUnifiedEntitlementInfo* info) {
@@ -1850,93 +1865,84 @@ int32_t dlcEmu_sceAppContentAddcontUnmount(const SceAppContentMountPoint* mountP
     return SCE_OK;
 }
 
-// Delete is deliberately no-op only for fake DLC so /app0/dlcNN remains unchanged.
+// Delete is a successful no-op so emulated DLC remains available.
 int32_t dlcEmu_sceAppContentAddcontDelete(SceNpServiceLabel serviceLabel,
                                                 const SceNpUnifiedEntitlementLabel* entitlementLabel) {
     (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
-        return SCE_OK;
-    }
-    return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    return SCE_OK;
 }
 
-// Download queueing is not emulated. Delegate it to the native AppContent
-// service instead of pretending fake DLC entered a download queue.
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownload(SceNpServiceLabel serviceLabel,
                                                          const SceNpUnifiedEntitlementLabel* entitlementLabel) {
+    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_entitlement_command(kAppContentRpcCommandAddcontEnqueueDownload,
-                                       serviceLabel,
-                                       entitlementLabel);
+    return SCE_OK;
 }
 
-// Same boundary as the public enqueue path: native service owns downloads.
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadSp(SceNpServiceLabel serviceLabel,
                                                            const SceNpUnifiedEntitlementLabel* entitlementLabel) {
+    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_entitlement_command(kAppContentRpcCommandAddcontEnqueueDownloadSp,
-                                       serviceLabel,
-                                       entitlementLabel);
+    return SCE_OK;
 }
 
-// Entitlement-id download queueing is pass-through for the native service.
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadByEntitlemetId(const char* entitlementId) {
     if (!entitlementId) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_entitlement_id_command(kAppContentRpcCommandAddcontEnqueueDownloadByEntitlementId,
-                                          entitlementId);
+    return SCE_OK;
 }
 
-// Shrink mutates add-on storage and is therefore outside the fake-DLC overlay.
 int32_t dlcEmu_sceAppContentAddcontShrink(SceNpServiceLabel serviceLabel,
                                                 const SceNpUnifiedEntitlementLabel* entitlementLabel) {
+    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_entitlement_command(kAppContentRpcCommandAddcontShrink,
-                                       serviceLabel,
-                                       entitlementLabel);
+    return SCE_OK;
 }
 
-int32_t dlcEmu_sceAppContentRaw_xZo2_418Wdo(
+int32_t dlcEmu_sceAppContentCheckBundleLicenseOnDisc(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel) {
+    (void)serviceLabel;
     if (!valid_app_unified_label_for_sdk(entitlementLabel, 0x1500000u)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    if (copy_entry_by_label(entitlementLabel, nullptr)) {
-        return SCE_OK;
-    }
-    return app_rpc_entitlement_command(kAppContentRpcCommandRawXZo2, serviceLabel, entitlementLabel);
+    return SCE_OK;
 }
 
-int32_t dlcEmu_sceAppContentRaw_UO_gD_XFyGE(const SceAppContentMountPoint* mountPoint) {
-    return app_rpc_mount_handle_command(kAppContentRpcCommandRawUO, mountPoint);
+int32_t dlcEmu_sceAppContentDownload2Shrink(const void* downloadHandle) {
+    if (!downloadHandle) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    // The value is an opaque download-data handle despite the pointer-shaped ABI.
+    // Do not dereference it as a mount-point structure.
+    return app_rpc_mount_handle_command(kAppContentRpcCommandDownload2Shrink, downloadHandle);
 }
 
-int32_t dlcEmu_sceAppContentRaw_MFUAprB41fA(const SceAppContentMountPoint* mountPoint) {
-    return app_rpc_mount_handle_command(kAppContentRpcCommandRawMFU, mountPoint);
+int32_t dlcEmu_sceAppContentDownload2Expand(const void* downloadHandle) {
+    if (!downloadHandle) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    // The value is an opaque download-data handle despite the pointer-shaped ABI.
+    // Do not dereference it as a mount-point structure.
+    return app_rpc_mount_handle_command(kAppContentRpcCommandDownload2Expand, downloadHandle);
 }
 
-int32_t dlcEmu_sceAppContentRaw_y8meQn_Qy5c(
+int32_t dlcEmu_sceAppContentGetPlayableStatus(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     uint32_t* playableStatus) {
+    (void)serviceLabel;
     if (!valid_app_unified_label_for_sdk(entitlementLabel, 0x3500000u) || !playableStatus) {
         return SCE_APP_CONTENT_ERROR_PARAMETER;
     }
-    if (copy_entry_by_label(entitlementLabel, nullptr)) {
-        *playableStatus = 1u;
-        return SCE_OK;
-    }
-    return app_rpc_playable_status(serviceLabel, entitlementLabel, playableStatus);
+    *playableStatus = 1u;
+    return SCE_OK;
 }
 
-int32_t dlcEmu_sceAppContentRaw_1saJukIkcKw(uint32_t* gameTrialsFlag) {
+int32_t dlcEmu_sceAppContentGetGameTrialsFlag(uint32_t* gameTrialsFlag) {
     if (!gameTrialsFlag) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_u32_output(kAppContentRpcCommandRaw1sa, gameTrialsFlag);
+    *gameTrialsFlag = 0u;
+    return SCE_OK;
 }
 
-int32_t dlcEmu_sceAppContentRaw_SWVxsi_ZBlw(const void* input, void* output) {
-    if (!input || !output) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_blob16_output1(kAppContentRpcCommandRawSWV, input, output);
+int32_t dlcEmu_sceAppContentUnknownMdid(const void* mdid, bool* matches) {
+    if (!mdid || !matches) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    *matches = true;
+    return SCE_OK;
 }
 
 int32_t dlcEmu_sceAppContentTemporaryDataUnmount(const SceAppContentMountPoint* mountPoint) {
@@ -2000,22 +2006,21 @@ int32_t dlcEmu_sceAppContentDownload1Expand(const SceAppContentMountPoint* mount
     return app_rpc_mount_handle_command(kAppContentRpcCommandDownload1Expand, mountPoint);
 }
 
-// Download progress belongs to the native download service, not to the fake
-// entitlement overlay.
 int32_t dlcEmu_sceAppContentGetAddcontDownloadProgress(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceAppContentAddcontDownloadProgress* progress) {
+    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel) || !progress) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_entitlement_progress(kAppContentRpcCommandGetAddcontDownloadProgress,
-                                        serviceLabel,
-                                        entitlementLabel,
-                                        progress);
+    progress->dataSize = 1u;
+    progress->downloadedSize = 1u;
+    return SCE_OK;
 }
 
 int32_t dlcEmu_sceAppContentGetPftFlag(SceAppContentPftFlag* pftFlag) {
     if (!pftFlag) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return app_rpc_u32_output(kAppContentRpcCommandGetPftFlag, reinterpret_cast<uint32_t*>(pftFlag));
+    *pftFlag = SCE_APP_CONTENT_PFT_FLAG_OFF;
+    return SCE_OK;
 }
 
 int32_t dlcEmu_sceAppContentTemporaryDataMount(SceAppContentMountPoint* mountPoint) {
@@ -2064,7 +2069,8 @@ int32_t dlcEmu_sceNpEntitlementAccessGetSkuFlag(SceNpEntitlementAccessSkuFlag* s
 int32_t dlcEmu_sceNpEntitlementAccessGetGameTrialsFlag(
     SceNpEntitlementAccessGameTrialsFlag* gameTrialsFlag) {
     if (!gameTrialsFlag) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    return np_rpc_u32_output(kNpRpcCommandGameTrials, reinterpret_cast<uint32_t*>(gameTrialsFlag));
+    *gameTrialsFlag = SCE_NP_ENTITLEMENT_ACCESS_GAME_TRIALS_FLAG_OFF;
+    return SCE_OK;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessInitialize(
@@ -2086,27 +2092,36 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoList(
     uint32_t listNum,
     uint32_t* hitNum) {
     (void)serviceLabel;
+    if (listNum > SCE_NP_ENTITLEMENT_ACCESS_ADDCONT_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    }
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     if (!st.available) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+    uint32_t total = 0;
+    for (size_t i = 0; i < st.count; ++i) {
+        if (st.entries[i].activeFlag) ++total;
+    }
+    if (total == 0) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     if (!list || listNum == 0) {
         if (!hitNum) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-        *hitNum = static_cast<uint32_t>(st.count);
+        *hitNum = total;
         dlc_logf("dlc.np_addcont_list.fake mode=count fake=%u", *hitNum);
         return SCE_OK;
     }
     uint32_t written = 0;
     for (size_t i = 0; i < st.count && written < listNum; ++i) {
+        if (!st.entries[i].activeFlag) continue;
         fill_np_info(st.entries[i], &list[written++]);
     }
-    if (hitNum) *hitNum = static_cast<uint32_t>(st.count);
+    if (hitNum) *hitNum = total;
     dlc_logf("dlc.np_addcont_list.fake mode=list fake=%u written=%u",
-                              static_cast<unsigned>(st.count),
+                              total,
                               written);
     return SCE_OK;
 }
 
-// Main PS5 single entitlement API: configured entries are installed.
+// Main PS5 single entitlement API: active configured entries use their configured status.
 int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfo(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
@@ -2114,7 +2129,7 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfo(
     (void)serviceLabel;
     if (!valid_np_unified_label(entitlementLabel) || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_active_entry_by_label(entitlementLabel, &entry)) {
         fill_np_info(entry, info);
         dlc_logf("dlc.np_addcont_info.fake label=%s packageType=%s status=%u",
                                   entry.label.data,
@@ -2125,7 +2140,7 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfo(
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 
-// Runtime-only individual addcont query: surface fake installed DLC even though
+// Runtime-only individual addcont query: surface active configured DLC even though
 // this symbol is omitted from the SDK 10 weak stub.
 int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
     SceUserServiceUserId userId,
@@ -2136,7 +2151,7 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
     (void)serviceLabel;
     if (!valid_np_unified_label(entitlementLabel) || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_active_entry_by_label(entitlementLabel, &entry)) {
         fill_np_info(entry, info);
         dlc_logf("dlc.np_addcont_info_individual.fake label=%s packageType=%s status=%u",
                                   entry.label.data,
@@ -2147,40 +2162,46 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 
-int32_t dlcEmu_sceNpEntitlementAccessRaw_l0MTQHIcH3M(
+int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
     SceUserServiceUserId userId,
     SceNpServiceLabel serviceLabel,
-    void* list,
+    SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
     uint32_t* hitNum) {
     (void)serviceLabel;
-    if (userId == static_cast<SceUserServiceUserId>(-1) || !hitNum) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    if (userId == static_cast<SceUserServiceUserId>(-1)) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    }
+    if (listNum > SCE_NP_ENTITLEMENT_ACCESS_ADDCONT_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    }
+    if ((!list || listNum == 0) && !hitNum) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    }
 
     DlcState& st = ensure_loaded();
-    {
-        DlcLockGuard lock(st.mutex);
-        if (st.available) {
-            const uint32_t total = static_cast<uint32_t>(st.count);
-            if (list && listNum != 0) {
-                auto* dst = static_cast<unsigned char*>(list);
-                uint32_t written = 0;
-                for (size_t i = 0; i < st.count && written < listNum; ++i) {
-                    fill_np_raw_addcont_info(st.entries[i], dst + static_cast<size_t>(written) * 40u);
-                    ++written;
-                }
-            }
-            *hitNum = total;
-            return SCE_OK;
-        }
+    DlcLockGuard lock(st.mutex);
+    if (!st.available) {
+        if (hitNum) *hitNum = 0;
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     }
-    *hitNum = 0;
-    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+    uint32_t written = 0;
+    for (size_t i = 0; i < st.count; ++i) {
+        if (!st.entries[i].activeFlag) continue;
+        if (list && written < listNum) {
+            fill_np_info(st.entries[i], &list[written]);
+        }
+        ++written;
+    }
+    if (hitNum) *hitNum = written;
+    return written != 0 ? SCE_OK : SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 
-int32_t dlcEmu_sceNpEntitlementAccessRaw_eDXKe9FndlE(
+int32_t dlcEmu_sceNpEntitlementAccessGetPftFlag(
     SceNpEntitlementAccessGameTrialsFlag* pftFlag) {
     if (!pftFlag) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    return np_rpc_u32_output(kNpRpcCommandRawEDX, reinterpret_cast<uint32_t*>(pftFlag));
+    *pftFlag = SCE_NP_ENTITLEMENT_ACCESS_GAME_TRIALS_FLAG_OFF;
+    return SCE_OK;
 }
 
 // Entitlement key API: fake DLC returns explicit config key or default index+1024
@@ -2572,6 +2593,110 @@ int32_t dlcEmu_sceNpEntitlementAccessAbortRequest(int64_t requestId) {
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     clear_service_list_request_unlocked(st, requestId);
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateInitialize(void) {
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (st.initialized) return SCE_GAME_UPDATE_ERROR_ALREADY_INITIALIZED;
+    clear_game_update_requests_unlocked(st);
+    st.nextRequestId = 1;
+    st.initialized = true;
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateTerminate(void) {
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    clear_game_update_requests_unlocked(st);
+    st.initialized = false;
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateCreateRequest(void) {
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    for (size_t i = 0; i < kMaxGameUpdateRequests; ++i) {
+        if (st.requests[i] != GameUpdateRequestState::Free) continue;
+        const int32_t requestId = allocate_game_update_request_id_unlocked(st);
+        if (requestId <= 0) return SCE_GAME_UPDATE_ERROR_TOO_MANY_REQUESTS;
+        st.requestIds[i] = requestId;
+        st.requests[i] = GameUpdateRequestState::Active;
+        return requestId;
+    }
+    return SCE_GAME_UPDATE_ERROR_TOO_MANY_REQUESTS;
+}
+
+int32_t dlcEmu_sceGameUpdateCheck(int32_t requestId,
+                                  const SceGameUpdateCheckParam* param,
+                                  SceGameUpdateCheckResult* result) {
+    if (!param || !result) return SCE_GAME_UPDATE_ERROR_INVALID_ARG;
+    if (param->size != sizeof(*param) || result->size != sizeof(*result)) {
+        return SCE_GAME_UPDATE_ERROR_INVALID_SIZE;
+    }
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    GameUpdateRequestState* request = find_game_update_request_unlocked(st, requestId);
+    if (!request) return SCE_GAME_UPDATE_ERROR_REQUEST_NOT_FOUND;
+    if (*request == GameUpdateRequestState::Aborted) return SCE_GAME_UPDATE_ERROR_ABORTED;
+    fill_game_update_no_update(result);
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateCheckTitle(int32_t requestId,
+                                       uint32_t serviceLabel,
+                                       SceGameUpdateCheckResult* result) {
+    (void)serviceLabel;
+    if (!result) return SCE_GAME_UPDATE_ERROR_INVALID_ARG;
+    if (result->size != sizeof(*result)) return SCE_GAME_UPDATE_ERROR_INVALID_SIZE;
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    GameUpdateRequestState* request = find_game_update_request_unlocked(st, requestId);
+    if (!request) return SCE_GAME_UPDATE_ERROR_REQUEST_NOT_FOUND;
+    if (*request == GameUpdateRequestState::Aborted) return SCE_GAME_UPDATE_ERROR_ABORTED;
+    fill_game_update_no_update(result);
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateAbortRequest(int32_t requestId) {
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    GameUpdateRequestState* request = find_game_update_request_unlocked(st, requestId);
+    if (!request) return SCE_GAME_UPDATE_ERROR_REQUEST_NOT_FOUND;
+    *request = GameUpdateRequestState::Aborted;
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateDeleteRequest(int32_t requestId) {
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    GameUpdateRequestState* request = find_game_update_request_unlocked(st, requestId);
+    if (!request) return SCE_GAME_UPDATE_ERROR_REQUEST_NOT_FOUND;
+    const size_t index = static_cast<size_t>(request - st.requests);
+    st.requests[index] = GameUpdateRequestState::Free;
+    st.requestIds[index] = 0;
+    return SCE_OK;
+}
+
+int32_t dlcEmu_sceGameUpdateGetAddcontLatestVersion(
+    SceNpServiceLabel serviceLabel,
+    const SceNpUnifiedEntitlementLabel* entitlementLabel,
+    SceGameUpdateAddcontVersionInfo* info) {
+    if (!valid_np_unified_label(entitlementLabel) || !info) return SCE_GAME_UPDATE_ERROR_INVALID_ARG;
+    if (info->size != sizeof(*info)) return SCE_GAME_UPDATE_ERROR_INVALID_SIZE;
+    GameUpdateState& st = g_gameUpdateState;
+    DlcLockGuard lock(st.mutex);
+    if (!st.initialized) return SCE_GAME_UPDATE_ERROR_NOT_INITIALIZED;
+    (void)serviceLabel;
+    fill_game_update_no_addcont_latest_version(info);
+    dlc_logf("dlc.game_update_latest.fake label=%s found=0", entitlementLabel->data);
     return SCE_OK;
 }
 

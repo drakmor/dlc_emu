@@ -6,7 +6,7 @@ Library: libSceNpEntitlementAccess {
   version: 1
   stubfile: libSceNpEntitlementAccess_stub
 
-  function: l0MTQHIcH3M
+  function: sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual
   function: sceNpEntitlementAccessInitialize
   function: sceNpEntitlementAccessGetSkuFlag
   function: sceNpEntitlementAccessGetAddcontEntitlementInfoList
@@ -37,12 +37,12 @@ Library: libSceNpEntitlementAccessGameTrials {
   version: 1
   stubfile: libSceNpEntitlementAccessGameTrials_stub
 
-  function: sceNpEntitlementAccessGetGameTrialsFlag_GameTrials
+  function: sceNpEntitlementAccessGetGameTrialsFlag
 }
 
 Library: libSceNpEntitlementAccessPft {
   version: 1
   stubfile: libSceNpEntitlementAccessPft_stub
 
-  function: eDXKe9FndlE
+  function: sceNpEntitlementAccessGetPftFlag
 }

@@ -33,25 +33,25 @@ Library: libSceAppContent {
   function: sceAppContentDownload0Expand
   function: sceAppContentDownload1Shrink
   function: sceAppContentDownload1Expand
-  function: UO-gD-XFyGE
-  function: MFUAprB41fA
+  function: sceAppContentDownload2Shrink
+  function: sceAppContentDownload2Expand
   function: sceAppContentDownloadDataGetBlockSize
-  function: y8meQn-Qy5c
-  function: 1saJukIkcKw
+  function: sceAppContentGetPlayableStatus
+  function: sceAppContentGetGameTrialsFlag
 }
 
 Library: libSceAppContentBundle {
   version: 1
   stubfile: libSceAppContentBundle_stub
 
-  function: xZo2-418Wdo
+  function: sceAppContentCheckBundleLicenseOnDisc
 }
 
 Library: libSceAppContentGameTrials {
   version: 1
   stubfile: libSceAppContentGameTrials_stub
 
-  function: sceAppContentRaw_1saJukIkcKw_GameTrials
+  function: sceAppContentGetGameTrialsFlag
 }
 
 Library: libSceAppContentIro {
