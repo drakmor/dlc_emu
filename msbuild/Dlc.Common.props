@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ExpectedProsperoSdkDir>C:\SCE\Prospero SDKs\2.000</ExpectedProsperoSdkDir>
+    <DlcProsperoSdkDir>$(ExpectedProsperoSdkDir)</DlcProsperoSdkDir>
+    <DlcExtraPreprocessorDefinitions Condition="'$(DlcExtraPreprocessorDefinitions)'==''"></DlcExtraPreprocessorDefinitions>
+    <DlcOutDir>$(SolutionDir)out\$(Platform)_$(Configuration)\</DlcOutDir>
+    <OutDir>$(DlcOutDir)</OutDir>
+    <IntDir>$(SolutionDir)out\obj\$(MSBuildProjectName)\$(Platform)_$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>$(DlcExtraPreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>-std=c++17 -isystem "$(DlcProsperoSdkDir)\target\include" -isystem "$(DlcProsperoSdkDir)\target\include_common" %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <OptimizationLevel>Level2</OptimizationLevel>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <Target Name="GenerateDlcIpmiStub" BeforeTargets="Link">
+    <Exec WorkingDirectory="$(SolutionDir)"
+          Command="python &quot;$(SolutionDir)tools\make_dlc_ipmi_stub.py&quot; --library ipmi --out &quot;$(OutDir)libSceIpmi_stub_weak.a&quot;" />
+    <Exec WorkingDirectory="$(SolutionDir)"
+          Command="python &quot;$(SolutionDir)tools\make_dlc_ipmi_stub.py&quot; --library libc-internal --out &quot;$(OutDir)libSceLibcInternal_stub_weak.a&quot;" />
+  </Target>
+
+  <Target Name="RenameRawPrxNids" AfterTargets="Link" Condition="'$(DlcNidMap)' != ''">
+    <Message Importance="High" Text="Renaming raw NIDs in $(TargetPath) using $(DlcNidMap)" />
+    <Exec WorkingDirectory="$(SolutionDir)"
+          Command="python &quot;$(SolutionDir)tools\prx_rename_nids_auto.py&quot; &quot;$(TargetPath)&quot; &quot;$(TargetPath)&quot; --map &quot;$(DlcNidMap)&quot;" />
+    <Exec WorkingDirectory="$(SolutionDir)"
+          Command="python &quot;$(SolutionDir)tools\prospero-prx-fix-hash.py&quot; --check --quiet &quot;$(TargetPath)&quot;" />
+  </Target>
+</Project>

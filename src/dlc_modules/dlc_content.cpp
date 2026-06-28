@@ -29,6 +29,8 @@ namespace {
 
 constexpr size_t kMaxDlcEntries = SCE_DLC_EMU_CONTENTIDS_MAX;
 constexpr size_t kMaxConsumeTransactions = 256u;
+constexpr size_t kMaxEntryRequests = 64u;
+constexpr size_t kMaxUnifiedListRequests = 32u;
 constexpr size_t kMaxServiceListRequests = 32u;
 constexpr size_t kMaxGameUpdateRequests = 32u;
 constexpr size_t kMaxIniFileBytes = 32u * 1024u;
@@ -36,7 +38,6 @@ constexpr size_t kIniBufferBytes = kMaxIniFileBytes + 1u;
 constexpr uint64_t kDefaultEntitlementKeyBase = 1024u;
 constexpr int64_t kSyntheticRequestBase = 0x444c43000000ll;
 constexpr int64_t kSyntheticEntryRequestBase = kSyntheticRequestBase + 0x10000000ll;
-constexpr int32_t kNpEntitlementTitleTokenError = -2122514407; // 0x817D0019
 constexpr int64_t kSyntheticServiceListRequestBase = kSyntheticRequestBase + 0x20000000ll;
 constexpr uint32_t kNpReferencePackageTypeMax = 8u;
 static_assert(sizeof(SceNpEntitlementAccessAddcontEntitlementInfo) == 28u);
@@ -105,6 +106,7 @@ struct DlcEntry {
     uint8_t key[SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_KEY_SIZE]{};
     uint32_t packageType{SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAC};
     uint32_t status{SCE_NP_ENTITLEMENT_ACCESS_DOWNLOAD_STATUS_INSTALLED};
+    uint32_t npServiceLabel{0};
     int32_t useCount{0};
     int32_t useLimit{1};
     uint64_t activeDate{0};
@@ -112,6 +114,11 @@ struct DlcEntry {
     bool activeFlag{true};
     bool hasServiceLabel{false};
     bool consumable{false};
+    bool addcontVisible{false};
+    bool unifiedVisible{true};
+    bool serviceVisible{false};
+    bool mountable{false};
+    bool npServiceLabelSet{false};
 };
 
 struct ParsedDlcEntry {
@@ -122,6 +129,7 @@ struct ParsedDlcEntry {
     char keyHex[128]{};
     char invalidField[32]{};
     uint32_t downloadStatus{SCE_NP_ENTITLEMENT_ACCESS_DOWNLOAD_STATUS_INSTALLED};
+    uint32_t npServiceLabel{0};
     int32_t useCount{0};
     int32_t useLimit{1};
     uint64_t activeDate{0};
@@ -129,6 +137,15 @@ struct ParsedDlcEntry {
     bool activeFlag{true};
     bool consumable{false};
     bool consumableSet{false};
+    bool addcontVisible{false};
+    bool addcontVisibleSet{false};
+    bool unifiedVisible{true};
+    bool unifiedVisibleSet{false};
+    bool serviceVisible{false};
+    bool serviceVisibleSet{false};
+    bool mountable{false};
+    bool mountableSet{false};
+    bool npServiceLabelSet{false};
     bool valid{true};
 };
 
@@ -137,6 +154,26 @@ struct ConsumedTransaction {
     size_t entryIndex{0};
     char transactionId[SCE_NP_ENTITLEMENT_ACCESS_TRANSACTION_ID_MAX_SIZE]{};
     int32_t useCount{0};
+    int32_t resultUseLimit{0};
+};
+
+enum class EntryRequestType : uint8_t {
+    None,
+    UnifiedInfo,
+    ConsumableInfo,
+    ServiceInfo,
+    ConsumeUnified,
+    ConsumeService,
+};
+
+struct EntryPendingRequest {
+    bool used{false};
+    bool aborted{false};
+    int64_t requestId{0};
+    EntryRequestType type{EntryRequestType::None};
+    size_t entryIndex{0};
+    int32_t resultUseLimit{0};
+    DlcEntry snapshot{};
 };
 
 struct ServiceListRequest {
@@ -146,18 +183,37 @@ struct ServiceListRequest {
     uint32_t limit{0};
 };
 
+struct UnifiedListRequest {
+    uint32_t packageType{SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_NONE};
+    uint32_t sort{SCE_NP_ENTITLEMENT_ACCESS_SORT_TYPE_NONE};
+    uint32_t direction{SCE_NP_ENTITLEMENT_ACCESS_DIRECTION_TYPE_NONE};
+    uint32_t offset{0};
+    uint32_t limit{0};
+};
+
 struct ServiceListPendingRequest {
     bool used{false};
+    bool aborted{false};
     int64_t requestId{0};
+    SceNpServiceLabel npServiceLabel{0};
     ServiceListRequest request{};
     uint32_t filterCount{0};
     SceNpServiceEntitlementLabel filters[SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE]{};
 };
 
+struct UnifiedListPendingRequest {
+    bool used{false};
+    bool aborted{false};
+    int64_t requestId{0};
+    SceNpServiceLabel npServiceLabel{0};
+    UnifiedListRequest request{};
+    uint32_t filterCount{0};
+    SceNpUnifiedEntitlementLabel filters[SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE]{};
+};
+
 struct DlcState {
     DlcMutex mutex;
     bool loaded{false};
-    bool available{false};
     size_t count{0};
     size_t autoMountCount{0};
     size_t mountedCount{0};
@@ -165,6 +221,10 @@ struct DlcState {
     bool mounted[kMaxDlcEntries]{};
     ConsumedTransaction consumed[kMaxConsumeTransactions]{};
     size_t consumedNext{0};
+    EntryPendingRequest entryRequests[kMaxEntryRequests]{};
+    uint64_t entryRequestNext{1};
+    UnifiedListPendingRequest unifiedListRequests[kMaxUnifiedListRequests]{};
+    uint64_t unifiedListRequestNext{1};
     ServiceListPendingRequest serviceListRequests[kMaxServiceListRequests]{};
     uint64_t serviceListRequestNext{1};
 };
@@ -514,6 +574,10 @@ const char* download_status_name(uint32_t status) {
 }
 
 bool package_type_supports_mount(uint32_t packageType) {
+    return packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAC;
+}
+
+bool package_type_is_addcont(uint32_t packageType) {
     return packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAC ||
            packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSAL;
 }
@@ -822,6 +886,15 @@ private:
             if (!copy_value(parsed.keyHex, sizeof(parsed.keyHex), value)) invalidate(parsed, "entitlement_key");
         } else if (key_equals(key, "download_status")) {
             if (!parse_download_status(value, &parsed.downloadStatus)) invalidate(parsed, "download_status");
+        } else if (key_equals(key, "np_service_label")) {
+            if (std::strcmp(value, "-1") == 0) {
+                parsed.npServiceLabel = 0;
+                parsed.npServiceLabelSet = false;
+            } else if (!parse_u32(value, &parsed.npServiceLabel)) {
+                invalidate(parsed, "np_service_label");
+            } else {
+                parsed.npServiceLabelSet = true;
+            }
         } else if (key_equals(key, "use_count")) {
             if (!parse_i32(value, &parsed.useCount)) invalidate(parsed, "use_count");
         } else if (key_equals(key, "use_limit")) {
@@ -837,6 +910,30 @@ private:
                 invalidate(parsed, "consumable");
             } else {
                 parsed.consumableSet = true;
+            }
+        } else if (key_equals(key, "addcont_visible")) {
+            if (!parse_value_bool(value, &parsed.addcontVisible)) {
+                invalidate(parsed, "addcont_visible");
+            } else {
+                parsed.addcontVisibleSet = true;
+            }
+        } else if (key_equals(key, "unified_visible")) {
+            if (!parse_value_bool(value, &parsed.unifiedVisible)) {
+                invalidate(parsed, "unified_visible");
+            } else {
+                parsed.unifiedVisibleSet = true;
+            }
+        } else if (key_equals(key, "service_visible")) {
+            if (!parse_value_bool(value, &parsed.serviceVisible)) {
+                invalidate(parsed, "service_visible");
+            } else {
+                parsed.serviceVisibleSet = true;
+            }
+        } else if (key_equals(key, "mountable")) {
+            if (!parse_value_bool(value, &parsed.mountable)) {
+                invalidate(parsed, "mountable");
+            } else {
+                parsed.mountableSet = true;
             }
         }
     }
@@ -866,7 +963,8 @@ private:
 
     static bool label_exists(const DlcState& st, const char* label) {
         for (size_t i = 0; i < st.count; ++i) {
-            if (std::strcmp(st.entries[i].label.data, label) == 0) {
+            if (st.entries[i].label.data[0] &&
+                std::strcmp(st.entries[i].label.data, label) == 0) {
                 return true;
             }
         }
@@ -905,8 +1003,8 @@ private:
             parsed = ParsedDlcEntry{};
             return;
         }
-        if (!parsed.contentId[0]) {
-            dlc_logf("dlc.entry skip reason=missing-content-id");
+        if (!parsed.contentId[0] && !parsed.label[0] && !parsed.serviceLabel[0]) {
+            dlc_logf("dlc.entry skip reason=missing-identifier");
             parsed = ParsedDlcEntry{};
             return;
         }
@@ -921,27 +1019,53 @@ private:
             return;
         }
         const char* contentLabel = nullptr;
-        if (!valid_content_id(contentId, &contentLabel)) {
+        if (contentId[0] && !valid_content_id(contentId, &contentLabel)) {
             dlc_logf("dlc.entry skip reason=bad-content-id contentId=%s", contentId ? contentId : "<null>");
             return;
         }
         const char* label = parsed.label[0] ? parsed.label : contentLabel;
-        if (!valid_unified_label_text(label)) {
+        const char* const displayLabel = label && label[0] ? label : "<none>";
+        const bool defaultUnifiedVisible = label && label[0];
+        const bool unifiedVisible = parsed.unifiedVisibleSet ? parsed.unifiedVisible : defaultUnifiedVisible;
+        const bool addcontVisible = parsed.addcontVisibleSet
+                                        ? parsed.addcontVisible
+                                        : package_type_is_addcont(packageType);
+        const bool serviceVisible = parsed.serviceVisibleSet
+                                        ? parsed.serviceVisible
+                                        : parsed.serviceLabel[0] != '\0';
+        const bool mountable = parsed.mountableSet
+                                   ? parsed.mountable
+                                   : package_type_supports_mount(packageType) && addcontVisible;
+        if (!addcontVisible && !unifiedVisible && !serviceVisible) {
+            dlc_logf("dlc.entry skip reason=no-visible-surface label=%s", displayLabel);
+            return;
+        }
+        if (mountable && !addcontVisible) {
+            dlc_logf("dlc.entry skip reason=mountable-without-addcont label=%s", displayLabel);
+            return;
+        }
+        if ((unifiedVisible || addcontVisible) && !valid_unified_label_text(label)) {
             dlc_logf("dlc.entry skip reason=bad-label contentId=%s label=%s",
                      contentId ? contentId : "<null>",
                      label ? label : "<null>");
             return;
         }
-        if (label_exists(st, label)) {
+        if (label && label[0] && label_exists(st, label)) {
             dlc_logf("dlc.entry skip reason=duplicate-label label=%s", label);
+            return;
+        }
+        if (parsed.useCount < 0 || parsed.useLimit < 0) {
+            dlc_logf("dlc.entry skip reason=bad-usage-count label=%s", label ? label : "<none>");
             return;
         }
 
         DlcEntry& entry = st.entries[st.count];
         strlcpy(entry.contentId, contentId, sizeof(entry.contentId));
-        strlcpy(entry.label.data, label, sizeof(entry.label.data));
+        if (label) strlcpy(entry.label.data, label, sizeof(entry.label.data));
         entry.packageType = packageType;
         entry.status = parsed.downloadStatus;
+        entry.npServiceLabel = parsed.npServiceLabel;
+        entry.npServiceLabelSet = parsed.npServiceLabelSet;
         entry.useCount = parsed.useCount;
         entry.useLimit = parsed.useLimit;
         entry.activeFlag = parsed.activeFlag;
@@ -951,10 +1075,13 @@ private:
                                ? parsed.consumable
                                : (packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSCONS ||
                                   packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_PSVC);
+        entry.addcontVisible = addcontVisible;
+        entry.unifiedVisible = unifiedVisible;
+        entry.mountable = mountable;
         if (parsed.serviceLabel[0]) {
             if (!valid_service_label_text(parsed.serviceLabel)) {
                 dlc_logf("dlc.entry skip reason=bad-service-label label=%s serviceLabel=%s",
-                         label,
+                         displayLabel,
                          parsed.serviceLabel);
                 entry = DlcEntry{};
                 return;
@@ -968,35 +1095,45 @@ private:
             strlcpy(entry.serviceLabel.data, parsed.serviceLabel, sizeof(entry.serviceLabel.data));
             entry.hasServiceLabel = true;
         }
+        entry.serviceVisible = serviceVisible;
+        if (entry.serviceVisible && !entry.hasServiceLabel) {
+            dlc_logf("dlc.entry skip reason=service-visible-without-label label=%s",
+                     label ? label : "<none>");
+            entry = DlcEntry{};
+            return;
+        }
+        bool autoMountAssigned = false;
         if (parsed.mountPoint[0]) {
             if (std::strlen(parsed.mountPoint) >= sizeof(entry.mount.data)) {
-                dlc_logf("dlc.entry skip reason=mount-too-long label=%s", label);
+                dlc_logf("dlc.entry skip reason=mount-too-long label=%s", displayLabel);
                 entry = DlcEntry{};
                 return;
             }
             strlcpy(entry.mount.data, parsed.mountPoint, sizeof(entry.mount.data));
-        } else if (package_type_supports_mount(packageType)) {
+        } else if (entry.mountable) {
             const int mountLen = std::snprintf(entry.mount.data,
                                                sizeof(entry.mount.data),
                                                "%s%u",
                                                SCE_DLC_EMU_MOUNT_PREFIX,
                                                static_cast<unsigned>(st.autoMountCount));
             if (mountLen < 0 || static_cast<size_t>(mountLen) >= sizeof(entry.mount.data)) {
-                dlc_logf("dlc.entry skip reason=mount-too-long label=%s", label);
+                dlc_logf("dlc.entry skip reason=mount-too-long label=%s", displayLabel);
                 entry = DlcEntry{};
                 return;
             }
-            ++st.autoMountCount;
+            autoMountAssigned = true;
         }
         if (parsed.keyHex[0]) {
             if (!parse_hex_key(parsed.keyHex, entry.key)) {
-                dlc_logf("dlc.entry skip reason=bad-key label=%s", label);
+                dlc_logf("dlc.entry skip reason=bad-key label=%s", displayLabel);
                 entry = DlcEntry{};
                 return;
             }
         } else {
             make_default_key(st.count, entry.key);
         }
+
+        if (autoMountAssigned) ++st.autoMountCount;
 
         log_dlc_entry_apply(st.count, entry, parsed.keyHex[0] ? "config" : "default");
 
@@ -1054,6 +1191,7 @@ DlcState& ensure_loaded() {
     }
     st.loaded = true;
     st.count = 0;
+    dlc_logf("dlc.version value=%s", SCE_DLC_EMU_VERSION);
 
     static char ini[kIniBufferBytes]{};
     size_t len = 0;
@@ -1075,7 +1213,6 @@ DlcState& ensure_loaded() {
                                   static_cast<unsigned>(len));
         return st;
     }
-    st.available = st.count > 0;
     dlc_logf("dlc.load status=ok path=%s entries=%u",
                               SCE_DLC_EMU_INI_PATH,
                               static_cast<unsigned>(st.count));
@@ -1137,7 +1274,24 @@ const DlcEntry* find_entry_by_service_label_unlocked(const DlcState& st,
     return nullptr;
 }
 
-const DlcEntry* find_entry_by_request_unlocked(const DlcState& st, int64_t requestId);
+bool entry_matches_np_service(const DlcEntry& entry, SceNpServiceLabel serviceLabel) {
+    return !entry.npServiceLabelSet || entry.npServiceLabel == serviceLabel;
+}
+
+bool entry_is_addcont(const DlcEntry& entry, SceNpServiceLabel serviceLabel) {
+    return entry.addcontVisible && entry.activeFlag &&
+           entry_matches_np_service(entry, serviceLabel);
+}
+
+bool entry_is_unified(const DlcEntry& entry, SceNpServiceLabel serviceLabel) {
+    return entry.unifiedVisible && entry.label.data[0] &&
+           entry_matches_np_service(entry, serviceLabel);
+}
+
+bool entry_is_service(const DlcEntry& entry, SceNpServiceLabel serviceLabel) {
+    return entry.serviceVisible && entry.hasServiceLabel &&
+           entry_matches_np_service(entry, serviceLabel);
+}
 
 bool copy_entry_by_label(const SceNpUnifiedEntitlementLabel* label, DlcEntry* out, size_t* indexOut = nullptr) {
     DlcState& st = ensure_loaded();
@@ -1172,33 +1326,12 @@ bool copy_active_entry_by_label(const SceNpUnifiedEntitlementLabel* label,
     return true;
 }
 
-bool copy_entry_by_service_label(const SceNpServiceEntitlementLabel* label,
-                                 DlcEntry* out,
-                                 size_t* indexOut = nullptr) {
-    DlcState& st = ensure_loaded();
-    DlcLockGuard lock(st.mutex);
-    if (const DlcEntry* entry = find_entry_by_service_label_unlocked(st, label)) {
-        if (out) *out = *entry;
-        if (indexOut) *indexOut = static_cast<size_t>(entry - st.entries);
-        return true;
-    }
-    return false;
-}
-
-bool copy_entry_by_request(int64_t requestId, DlcEntry* out) {
-    DlcState& st = ensure_loaded();
-    DlcLockGuard lock(st.mutex);
-    if (const DlcEntry* entry = find_entry_by_request_unlocked(st, requestId)) {
-        if (out) *out = *entry;
-        return true;
-    }
-    return false;
-}
-
 int32_t mount_entry_unlocked(DlcState& st, size_t index, SceAppContentMountPoint* mountPoint) {
     if (index >= st.count || !mountPoint) return SCE_APP_CONTENT_ERROR_NOT_FOUND;
     const DlcEntry& entry = st.entries[index];
-    if (!package_type_supports_mount(entry.packageType)) return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    if (!entry.addcontVisible || !entry.mountable || !entry.activeFlag) {
+        return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    }
     if (!entry.mount.data[0]) return SCE_APP_CONTENT_ERROR_NOT_FOUND;
     if (entry.status != SCE_NP_ENTITLEMENT_ACCESS_DOWNLOAD_STATUS_INSTALLED) {
         return SCE_APP_CONTENT_ERROR_ADDCONT_NO_IN_QUEUE;
@@ -1214,23 +1347,11 @@ int32_t mount_entry_unlocked(DlcState& st, size_t index, SceAppContentMountPoint
     return SCE_OK;
 }
 
-bool has_fake_dlc() {
-    DlcState& st = ensure_loaded();
-    DlcLockGuard lock(st.mutex);
-    return st.available;
-}
-
 bool entry_matches_package(const DlcEntry& entry, uint32_t packageType) {
-    return packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_NONE || entry.packageType == packageType;
+    return entry.unifiedVisible && entry.label.data[0] &&
+           (packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_NONE ||
+            entry.packageType == packageType);
 }
-
-struct UnifiedListRequest {
-    uint32_t packageType{SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_NONE};
-    uint32_t sort{SCE_NP_ENTITLEMENT_ACCESS_SORT_TYPE_NONE};
-    uint32_t direction{SCE_NP_ENTITLEMENT_ACCESS_DIRECTION_TYPE_NONE};
-    uint32_t offset{0};
-    uint32_t limit{0};
-};
 
 bool unified_entry_before(const DlcEntry& lhs,
                           const DlcEntry& rhs,
@@ -1404,6 +1525,7 @@ bool valid_app_unified_label_for_sdk(const SceNpUnifiedEntitlementLabel* label, 
 
 bool valid_np_unified_label(const SceNpUnifiedEntitlementLabel* label) {
     return valid_app_unified_label(label) &&
+           label->data[0] &&
            has_nul_terminator(label->data, sizeof(label->data));
 }
 
@@ -1416,8 +1538,13 @@ bool valid_np_service_label(const SceNpServiceEntitlementLabel* label) {
 
 bool valid_np_transaction_id(const SceNpEntitlementAccessTransactionId* transactionId) {
     return transactionId &&
+           transactionId->transactionId[0] &&
            is_zeroed(transactionId->padding, sizeof(transactionId->padding)) &&
            has_nul_terminator(transactionId->transactionId, sizeof(transactionId->transactionId));
+}
+
+bool valid_np_user_id(SceUserServiceUserId userId) {
+    return userId != SCE_USER_SERVICE_USER_ID_INVALID;
 }
 
 bool valid_app_boot_param_reserved(const SceAppContentBootParam* bootParam) {
@@ -1432,13 +1559,6 @@ bool valid_np_boot_param_reserved(const SceNpEntitlementAccessBootParam* bootPar
 
 bool valid_patch_install_path(const char* path) {
     return path && std::strlen(path) <= 0xffu;
-}
-
-int32_t finish_title_token_poll(int32_t* pResult, int32_t* useLimit) {
-    if (!pResult || !useLimit) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    *pResult = kNpEntitlementTitleTokenError;
-    *useLimit = -1;
-    return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
 }
 
 bool valid_unified_list_package_type(uint32_t packageType) {
@@ -1458,6 +1578,9 @@ bool valid_np_unified_list_request(const SceNpUnifiedEntitlementLabel* list,
     if (param->limit <= 0) return false;
     if (param->limit > static_cast<int32_t>(SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE)) return false;
     if (!list && listNum != 0) return false;
+    for (uint32_t i = 0; i < listNum; ++i) {
+        if (!valid_np_unified_label(&list[i])) return false;
+    }
     if (param->sort > SCE_NP_ENTITLEMENT_ACCESS_SORT_TYPE_ACTIVE_DATE) return false;
     if (param->direction > SCE_NP_ENTITLEMENT_ACCESS_DIRECTION_TYPE_DESC) return false;
     if (param->packageType > kNpReferencePackageTypeMax) return false;
@@ -1484,10 +1607,6 @@ bool valid_np_service_list_request(const SceNpServiceEntitlementLabel* list,
     return param->packageType == SCE_NP_ENTITLEMENT_ACCESS_PACKAGE_TYPE_NONE;
 }
 
-int64_t synthetic_request_id_for_index(size_t index) {
-    return kSyntheticEntryRequestBase + static_cast<int64_t>(index + 1u);
-}
-
 UnifiedListRequest make_unified_list_request(const SceNpEntitlementAccessRequestEntitlementInfoListParam* param) {
     UnifiedListRequest request{};
     if (!param) return request;
@@ -1497,16 +1616,6 @@ UnifiedListRequest make_unified_list_request(const SceNpEntitlementAccessRequest
     request.offset = static_cast<uint32_t>(param->offset);
     request.limit = static_cast<uint32_t>(param->limit);
     return request;
-}
-
-int64_t synthetic_list_request_id(const UnifiedListRequest& request) {
-    const uint64_t raw =
-        (static_cast<uint64_t>(request.packageType) & 0x0fu) |
-        ((static_cast<uint64_t>(request.sort) & 0x03u) << 4u) |
-        ((static_cast<uint64_t>(request.direction) & 0x03u) << 6u) |
-        ((static_cast<uint64_t>(request.offset) & 0x7ffu) << 8u) |
-        ((static_cast<uint64_t>(request.limit) & 0x7fu) << 19u);
-    return kSyntheticRequestBase + static_cast<int64_t>(raw);
 }
 
 ServiceListRequest make_service_list_request(const SceNpEntitlementAccessRequestEntitlementInfoListParam* param) {
@@ -1519,55 +1628,178 @@ ServiceListRequest make_service_list_request(const SceNpEntitlementAccessRequest
     return request;
 }
 
-bool decode_synthetic_list_request_id(int64_t requestId, UnifiedListRequest* request) {
-    if (requestId < kSyntheticRequestBase || requestId >= kSyntheticEntryRequestBase) return false;
-    const int64_t raw = requestId - kSyntheticRequestBase;
-    if (raw < 0 || raw >= 0x10000000ll) return false;
-    UnifiedListRequest decoded{};
-    decoded.packageType = static_cast<uint32_t>(raw & 0x0fll);
-    decoded.sort = static_cast<uint32_t>((raw >> 4u) & 0x03ll);
-    decoded.direction = static_cast<uint32_t>((raw >> 6u) & 0x03ll);
-    decoded.offset = static_cast<uint32_t>((raw >> 8u) & 0x7ffll);
-    decoded.limit = static_cast<uint32_t>((raw >> 19u) & 0x7fll);
-    if (!valid_unified_list_package_type(decoded.packageType) ||
-        decoded.sort > SCE_NP_ENTITLEMENT_ACCESS_SORT_TYPE_ACTIVE_DATE ||
-        decoded.direction > SCE_NP_ENTITLEMENT_ACCESS_DIRECTION_TYPE_DESC ||
-        decoded.offset > kMaxDlcEntries ||
-        decoded.limit == 0 ||
-        decoded.limit > SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
+int64_t next_entry_request_id_unlocked(DlcState& st) {
+    for (size_t attempt = 0; attempt <= kMaxEntryRequests; ++attempt) {
+        if (st.entryRequestNext == 0 || st.entryRequestNext >= 0x0fffffffULL) {
+            st.entryRequestNext = 1;
+        }
+        const int64_t candidate =
+            kSyntheticEntryRequestBase + static_cast<int64_t>(st.entryRequestNext++);
+        bool used = false;
+        for (size_t i = 0; i < kMaxEntryRequests; ++i) {
+            if (st.entryRequests[i].used && st.entryRequests[i].requestId == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return candidate;
+    }
+    return 0;
+}
+
+EntryPendingRequest* allocate_entry_request_unlocked(DlcState& st,
+                                                     EntryRequestType type,
+                                                     size_t entryIndex,
+                                                     int32_t resultUseLimit,
+                                                     int64_t* requestId) {
+    if (!requestId || entryIndex >= st.count) return nullptr;
+    for (size_t i = 0; i < kMaxEntryRequests; ++i) {
+        if (st.entryRequests[i].used) continue;
+        EntryPendingRequest& slot = st.entryRequests[i];
+        slot = EntryPendingRequest{};
+        slot.used = true;
+        slot.requestId = next_entry_request_id_unlocked(st);
+        if (slot.requestId == 0) {
+            slot = EntryPendingRequest{};
+            return nullptr;
+        }
+        slot.type = type;
+        slot.entryIndex = entryIndex;
+        slot.resultUseLimit = resultUseLimit;
+        slot.snapshot = st.entries[entryIndex];
+        *requestId = slot.requestId;
+        return &slot;
+    }
+    return nullptr;
+}
+
+EntryPendingRequest* find_entry_request_unlocked(DlcState& st, int64_t requestId) {
+    for (size_t i = 0; i < kMaxEntryRequests; ++i) {
+        if (st.entryRequests[i].used && st.entryRequests[i].requestId == requestId) {
+            return &st.entryRequests[i];
+        }
+    }
+    return nullptr;
+}
+
+int64_t next_unified_list_request_id_unlocked(DlcState& st) {
+    for (size_t attempt = 0; attempt <= kMaxUnifiedListRequests; ++attempt) {
+        if (st.unifiedListRequestNext == 0 || st.unifiedListRequestNext >= 0x0fffffffULL) {
+            st.unifiedListRequestNext = 1;
+        }
+        const int64_t candidate =
+            kSyntheticRequestBase + static_cast<int64_t>(st.unifiedListRequestNext++);
+        bool used = false;
+        for (size_t i = 0; i < kMaxUnifiedListRequests; ++i) {
+            if (st.unifiedListRequests[i].used &&
+                st.unifiedListRequests[i].requestId == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return candidate;
+    }
+    return 0;
+}
+
+UnifiedListPendingRequest* remember_unified_list_request_unlocked(
+    DlcState& st,
+    SceNpServiceLabel serviceLabel,
+    const UnifiedListRequest& request,
+    const SceNpUnifiedEntitlementLabel* list,
+    uint32_t listNum,
+    int64_t* requestId) {
+    if (!requestId) return nullptr;
+    for (size_t i = 0; i < kMaxUnifiedListRequests; ++i) {
+        if (st.unifiedListRequests[i].used) continue;
+        UnifiedListPendingRequest& slot = st.unifiedListRequests[i];
+        slot = UnifiedListPendingRequest{};
+        slot.used = true;
+        slot.requestId = next_unified_list_request_id_unlocked(st);
+        if (slot.requestId == 0) {
+            slot = UnifiedListPendingRequest{};
+            return nullptr;
+        }
+        slot.npServiceLabel = serviceLabel;
+        slot.request = request;
+        slot.filterCount = listNum;
+        for (uint32_t j = 0; j < listNum; ++j) slot.filters[j] = list[j];
+        *requestId = slot.requestId;
+        return &slot;
+    }
+    return nullptr;
+}
+
+UnifiedListPendingRequest* find_unified_list_request_unlocked(DlcState& st,
+                                                              int64_t requestId) {
+    for (size_t i = 0; i < kMaxUnifiedListRequests; ++i) {
+        if (st.unifiedListRequests[i].used &&
+            st.unifiedListRequests[i].requestId == requestId) {
+            return &st.unifiedListRequests[i];
+        }
+    }
+    return nullptr;
+}
+
+bool unified_list_request_matches(const UnifiedListPendingRequest& request,
+                                  const DlcEntry& entry) {
+    if (!entry_matches_np_service(entry, request.npServiceLabel) ||
+        !entry_matches_package(entry, request.request.packageType)) {
         return false;
     }
-    if (request) *request = decoded;
-    return true;
+    if (request.filterCount == 0) return true;
+    for (uint32_t i = 0; i < request.filterCount; ++i) {
+        if (std::strcmp(request.filters[i].data, entry.label.data) == 0) return true;
+    }
+    return false;
 }
 
 int64_t next_service_list_request_id_unlocked(DlcState& st) {
-    if (st.serviceListRequestNext == 0 || st.serviceListRequestNext >= 0x0fffffffULL) {
-        st.serviceListRequestNext = 1;
+    for (size_t attempt = 0; attempt <= kMaxServiceListRequests; ++attempt) {
+        if (st.serviceListRequestNext == 0 || st.serviceListRequestNext >= 0x0fffffffULL) {
+            st.serviceListRequestNext = 1;
+        }
+        const int64_t candidate =
+            kSyntheticServiceListRequestBase + static_cast<int64_t>(st.serviceListRequestNext++);
+        bool used = false;
+        for (size_t i = 0; i < kMaxServiceListRequests; ++i) {
+            if (st.serviceListRequests[i].used &&
+                st.serviceListRequests[i].requestId == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return candidate;
     }
-    return kSyntheticServiceListRequestBase + static_cast<int64_t>(st.serviceListRequestNext++);
+    return 0;
 }
 
 ServiceListPendingRequest* remember_service_list_request_unlocked(
     DlcState& st,
+    SceNpServiceLabel serviceLabel,
     const ServiceListRequest& request,
     const SceNpServiceEntitlementLabel* list,
     uint32_t listNum,
     int64_t* requestId) {
     if (!requestId) return nullptr;
-    const int64_t id = next_service_list_request_id_unlocked(st);
-    const uint64_t raw = static_cast<uint64_t>(id - kSyntheticServiceListRequestBase - 1);
-    ServiceListPendingRequest& slot = st.serviceListRequests[raw % kMaxServiceListRequests];
-    slot = ServiceListPendingRequest{};
-    slot.used = true;
-    slot.requestId = id;
-    slot.request = request;
-    slot.filterCount = listNum;
-    for (uint32_t i = 0; i < listNum; ++i) {
-        slot.filters[i] = list[i];
+    for (size_t i = 0; i < kMaxServiceListRequests; ++i) {
+        if (st.serviceListRequests[i].used) continue;
+        ServiceListPendingRequest& slot = st.serviceListRequests[i];
+        slot = ServiceListPendingRequest{};
+        slot.used = true;
+        slot.requestId = next_service_list_request_id_unlocked(st);
+        if (slot.requestId == 0) {
+            slot = ServiceListPendingRequest{};
+            return nullptr;
+        }
+        slot.npServiceLabel = serviceLabel;
+        slot.request = request;
+        slot.filterCount = listNum;
+        for (uint32_t j = 0; j < listNum; ++j) slot.filters[j] = list[j];
+        *requestId = slot.requestId;
+        return &slot;
     }
-    *requestId = id;
-    return &slot;
+    return nullptr;
 }
 
 ServiceListPendingRequest* find_service_list_request_unlocked(DlcState& st, int64_t requestId) {
@@ -1580,14 +1812,8 @@ ServiceListPendingRequest* find_service_list_request_unlocked(DlcState& st, int6
     return nullptr;
 }
 
-void clear_service_list_request_unlocked(DlcState& st, int64_t requestId) {
-    if (ServiceListPendingRequest* request = find_service_list_request_unlocked(st, requestId)) {
-        *request = ServiceListPendingRequest{};
-    }
-}
-
 bool service_list_request_matches(const ServiceListPendingRequest& request, const DlcEntry& entry) {
-    if (!entry.hasServiceLabel) return false;
+    if (!entry_is_service(entry, request.npServiceLabel)) return false;
     if (request.filterCount == 0) return true;
     for (uint32_t i = 0; i < request.filterCount; ++i) {
         if (std::strcmp(request.filters[i].data, entry.serviceLabel.data) == 0) {
@@ -1595,17 +1821,6 @@ bool service_list_request_matches(const ServiceListPendingRequest& request, cons
         }
     }
     return false;
-}
-
-bool is_synthetic_request_id(int64_t requestId) {
-    return requestId >= kSyntheticRequestBase;
-}
-
-const DlcEntry* find_entry_by_request_unlocked(const DlcState& st, int64_t requestId) {
-    if (requestId <= kSyntheticEntryRequestBase) return nullptr;
-    const uint64_t indexPlusOne = static_cast<uint64_t>(requestId - kSyntheticEntryRequestBase);
-    if (indexPlusOne == 0 || indexPlusOne > st.count) return nullptr;
-    return &st.entries[indexPlusOne - 1u];
 }
 
 ConsumedTransaction* find_consumed_transaction_unlocked(DlcState& st,
@@ -1623,13 +1838,15 @@ ConsumedTransaction* find_consumed_transaction_unlocked(DlcState& st,
 void remember_consumed_transaction_unlocked(DlcState& st,
                                             size_t entryIndex,
                                             const SceNpEntitlementAccessTransactionId* transactionId,
-                                            int32_t useCount) {
+                                            int32_t useCount,
+                                            int32_t resultUseLimit) {
     if (!transactionId) return;
     ConsumedTransaction& slot = st.consumed[st.consumedNext % kMaxConsumeTransactions];
     slot = ConsumedTransaction{};
     slot.used = true;
     slot.entryIndex = entryIndex;
     slot.useCount = useCount;
+    slot.resultUseLimit = resultUseLimit;
     strlcpy(slot.transactionId, transactionId->transactionId, sizeof(slot.transactionId));
     st.consumedNext = (st.consumedNext + 1u) % kMaxConsumeTransactions;
 }
@@ -1638,6 +1855,7 @@ int32_t consume_entry_unlocked(DlcState& st,
                                size_t entryIndex,
                                const SceNpEntitlementAccessTransactionId* transactionId,
                                int32_t useCount,
+                               EntryRequestType requestType,
                                int64_t* requestId) {
     if (entryIndex >= st.count || !transactionId || !requestId) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
@@ -1648,22 +1866,37 @@ int32_t consume_entry_unlocked(DlcState& st,
         if (consumed->entryIndex != entryIndex || consumed->useCount != useCount) {
             return SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
         }
-        *requestId = synthetic_request_id_for_index(entryIndex);
-        return SCE_OK;
+        return allocate_entry_request_unlocked(st,
+                                               requestType,
+                                               entryIndex,
+                                               consumed->resultUseLimit,
+                                               requestId)
+                   ? SCE_OK
+                   : SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
     }
 
     DlcEntry& entry = st.entries[entryIndex];
     if (!entry.activeFlag) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     if (!entry.consumable) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
-    if (entry.useLimit < 0 ||
-        useCount > entry.useLimit ||
-        entry.useCount > entry.useLimit - useCount) {
+    if (useCount > entry.useLimit || entry.useCount > INT32_MAX - useCount) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     }
+    const int32_t resultUseLimit = entry.useLimit - useCount;
+    if (!allocate_entry_request_unlocked(st,
+                                         requestType,
+                                         entryIndex,
+                                         resultUseLimit,
+                                         requestId)) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
+    }
     entry.useCount += useCount;
+    entry.useLimit = resultUseLimit;
 
-    remember_consumed_transaction_unlocked(st, entryIndex, transactionId, useCount);
-    *requestId = synthetic_request_id_for_index(entryIndex);
+    remember_consumed_transaction_unlocked(st,
+                                           entryIndex,
+                                           transactionId,
+                                           useCount,
+                                           resultUseLimit);
     return SCE_OK;
 }
 
@@ -1704,28 +1937,31 @@ int32_t dlcEmu_sceAppContentAppParamGetInt(SceAppContentAppParamId paramId, int3
                                   sizeof(*value));
 }
 
-// Old AppContent list API: report configured dlc_emu.ini entries as installed.
+// Old AppContent list API: expose only active entries assigned to addcont.
 int32_t dlcEmu_sceAppContentGetAddcontInfoList(SceNpServiceLabel serviceLabel,
                                                      SceAppContentAddcontInfo* list,
                                                      uint32_t listNum,
                                                      uint32_t* hitNum) {
-    (void)serviceLabel;
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    if (!st.available) return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    uint32_t total = 0;
+    for (size_t i = 0; i < st.count; ++i) {
+        if (entry_is_addcont(st.entries[i], serviceLabel)) ++total;
+    }
     if (!list || listNum == 0) {
         if (!hitNum) return SCE_APP_CONTENT_ERROR_PARAMETER;
-        *hitNum = static_cast<uint32_t>(st.count);
+        *hitNum = total;
         dlc_logf("dlc.app_addcont_list.fake mode=count fake=%u", *hitNum);
         return SCE_OK;
     }
     uint32_t written = 0;
     for (size_t i = 0; i < st.count && written < listNum; ++i) {
+        if (!entry_is_addcont(st.entries[i], serviceLabel)) continue;
         fill_app_info(st.entries[i], &list[written++]);
     }
-    if (hitNum) *hitNum = static_cast<uint32_t>(st.count);
+    if (hitNum) *hitNum = total;
     dlc_logf("dlc.app_addcont_list.fake mode=list fake=%u written=%u",
-                              static_cast<unsigned>(st.count),
+                              total,
                               written);
     return SCE_OK;
 }
@@ -1734,10 +1970,10 @@ int32_t dlcEmu_sceAppContentGetAddcontInfoList(SceNpServiceLabel serviceLabel,
 int32_t dlcEmu_sceAppContentGetAddcontInfo(SceNpServiceLabel serviceLabel,
                                                  const SceNpUnifiedEntitlementLabel* entitlementLabel,
                                                  SceAppContentAddcontInfo* info) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel) || !info) return SCE_APP_CONTENT_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_entry_by_label(entitlementLabel, &entry) &&
+        entry_is_addcont(entry, serviceLabel)) {
         fill_app_info(entry, info);
         dlc_logf("dlc.app_addcont_info.fake label=%s status=%u",
                                   entry.label.data,
@@ -1754,7 +1990,8 @@ int32_t dlcEmu_sceAppContentGetAddcontInfoByEntitlementId(
     SceAppContentAddcontInfo* info) {
     if (!entitlementId || !info) return SCE_APP_CONTENT_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_identifier(entitlementId, &entry)) {
+    if (copy_entry_by_identifier(entitlementId, &entry) &&
+        entry.addcontVisible && entry.activeFlag) {
         fill_app_info(entry, info);
         dlc_logf("dlc.app_addcont_info.fake entitlementId=%s label=%s status=%u",
                                   entitlementId,
@@ -1774,20 +2011,24 @@ int32_t dlcEmu_sceAppContentGetAddcontInfoListByIroTag(
     (void)iroTag;
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    if (!st.available) return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    uint32_t total = 0;
+    for (size_t i = 0; i < st.count; ++i) {
+        if (st.entries[i].addcontVisible && st.entries[i].activeFlag) ++total;
+    }
     if (!list || listNum == 0) {
         if (!hitNum) return SCE_APP_CONTENT_ERROR_PARAMETER;
-        *hitNum = static_cast<uint32_t>(st.count);
+        *hitNum = total;
         dlc_logf("dlc.app_iro_list.fake mode=count fake=%u", *hitNum);
         return SCE_OK;
     }
     uint32_t written = 0;
     for (size_t i = 0; i < st.count && written < listNum; ++i) {
+        if (!st.entries[i].addcontVisible || !st.entries[i].activeFlag) continue;
         fill_app_info(st.entries[i], &list[written++]);
     }
-    if (hitNum) *hitNum = static_cast<uint32_t>(st.count);
+    if (hitNum) *hitNum = total;
     dlc_logf("dlc.app_iro_list.fake mode=list fake=%u written=%u",
-                              static_cast<unsigned>(st.count),
+                              total,
                               written);
     return SCE_OK;
 }
@@ -1796,10 +2037,10 @@ int32_t dlcEmu_sceAppContentGetAddcontInfoListByIroTag(
 int32_t dlcEmu_sceAppContentGetEntitlementKey(SceNpServiceLabel serviceLabel,
                                                     const SceNpUnifiedEntitlementLabel* entitlementLabel,
                                                     SceAppContentEntitlementKey* key) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel) || !key) return SCE_APP_CONTENT_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_entry_by_label(entitlementLabel, &entry) &&
+        entry_is_addcont(entry, serviceLabel)) {
         std::memcpy(key->data, entry.key, sizeof(entry.key));
         return SCE_OK;
     }
@@ -1811,11 +2052,11 @@ int32_t dlcEmu_sceAppContentGetEntitlementKey(SceNpServiceLabel serviceLabel,
 int32_t dlcEmu_sceAppContentAddcontMount(SceNpServiceLabel serviceLabel,
                                                const SceNpUnifiedEntitlementLabel* entitlementLabel,
                                                SceAppContentMountPoint* mountPoint) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel) || !mountPoint) return SCE_APP_CONTENT_ERROR_PARAMETER;
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     const DlcEntry* entry = find_entry_by_label_unlocked(st, entitlementLabel);
+    if (entry && !entry_matches_np_service(*entry, serviceLabel)) entry = nullptr;
     const size_t index = entry_index_unlocked(st, entry);
     const int32_t rc = mount_entry_unlocked(st, index, mountPoint);
     if (rc == SCE_OK) {
@@ -1868,43 +2109,62 @@ int32_t dlcEmu_sceAppContentAddcontUnmount(const SceAppContentMountPoint* mountP
 // Delete is a successful no-op so emulated DLC remains available.
 int32_t dlcEmu_sceAppContentAddcontDelete(SceNpServiceLabel serviceLabel,
                                                 const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_label(entitlementLabel, &entry) &&
+                   entry_is_addcont(entry, serviceLabel)
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownload(SceNpServiceLabel serviceLabel,
                                                          const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_label(entitlementLabel, &entry) &&
+                   entry_is_addcont(entry, serviceLabel)
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadSp(SceNpServiceLabel serviceLabel,
                                                            const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_label(entitlementLabel, &entry) &&
+                   entry_is_addcont(entry, serviceLabel)
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentAddcontEnqueueDownloadByEntitlemetId(const char* entitlementId) {
     if (!entitlementId) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_identifier(entitlementId, &entry) &&
+                   entry.addcontVisible && entry.activeFlag
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentAddcontShrink(SceNpServiceLabel serviceLabel,
                                                 const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_label(entitlementLabel, &entry) &&
+                   entry_is_addcont(entry, serviceLabel)
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentCheckBundleLicenseOnDisc(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel) {
-    (void)serviceLabel;
     if (!valid_app_unified_label_for_sdk(entitlementLabel, 0x1500000u)) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_OK;
+    DlcEntry entry{};
+    return copy_entry_by_label(entitlementLabel, &entry) &&
+                   entry_is_addcont(entry, serviceLabel)
+               ? SCE_OK
+               : SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceAppContentDownload2Shrink(const void* downloadHandle) {
@@ -1925,9 +2185,13 @@ int32_t dlcEmu_sceAppContentGetPlayableStatus(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     uint32_t* playableStatus) {
-    (void)serviceLabel;
     if (!valid_app_unified_label_for_sdk(entitlementLabel, 0x3500000u) || !playableStatus) {
         return SCE_APP_CONTENT_ERROR_PARAMETER;
+    }
+    DlcEntry entry{};
+    if (!copy_entry_by_label(entitlementLabel, &entry) ||
+        !entry_is_addcont(entry, serviceLabel)) {
+        return SCE_APP_CONTENT_ERROR_NOT_FOUND;
     }
     *playableStatus = 1u;
     return SCE_OK;
@@ -2010,8 +2274,12 @@ int32_t dlcEmu_sceAppContentGetAddcontDownloadProgress(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceAppContentAddcontDownloadProgress* progress) {
-    (void)serviceLabel;
     if (!valid_app_unified_label(entitlementLabel) || !progress) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    DlcEntry entry{};
+    if (!copy_entry_by_label(entitlementLabel, &entry) ||
+        !entry_is_addcont(entry, serviceLabel)) {
+        return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    }
     progress->dataSize = 1u;
     progress->downloadedSize = 1u;
     return SCE_OK;
@@ -2091,18 +2359,15 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoList(
     SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
     uint32_t* hitNum) {
-    (void)serviceLabel;
     if (listNum > SCE_NP_ENTITLEMENT_ACCESS_ADDCONT_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    if (!st.available) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     uint32_t total = 0;
     for (size_t i = 0; i < st.count; ++i) {
-        if (st.entries[i].activeFlag) ++total;
+        if (entry_is_addcont(st.entries[i], serviceLabel)) ++total;
     }
-    if (total == 0) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
     if (!list || listNum == 0) {
         if (!hitNum) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
         *hitNum = total;
@@ -2111,7 +2376,7 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoList(
     }
     uint32_t written = 0;
     for (size_t i = 0; i < st.count && written < listNum; ++i) {
-        if (!st.entries[i].activeFlag) continue;
+        if (!entry_is_addcont(st.entries[i], serviceLabel)) continue;
         fill_np_info(st.entries[i], &list[written++]);
     }
     if (hitNum) *hitNum = total;
@@ -2126,10 +2391,10 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfo(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceNpEntitlementAccessAddcontEntitlementInfo* info) {
-    (void)serviceLabel;
     if (!valid_np_unified_label(entitlementLabel) || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_active_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_active_entry_by_label(entitlementLabel, &entry) &&
+        entry_is_addcont(entry, serviceLabel)) {
         fill_np_info(entry, info);
         dlc_logf("dlc.np_addcont_info.fake label=%s packageType=%s status=%u",
                                   entry.label.data,
@@ -2147,11 +2412,11 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoIndividual(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceNpEntitlementAccessAddcontEntitlementInfo* info) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_unified_label(entitlementLabel) || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_active_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_active_entry_by_label(entitlementLabel, &entry) &&
+        entry_is_addcont(entry, serviceLabel)) {
         fill_np_info(entry, info);
         dlc_logf("dlc.np_addcont_info_individual.fake label=%s packageType=%s status=%u",
                                   entry.label.data,
@@ -2168,10 +2433,7 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
     SceNpEntitlementAccessAddcontEntitlementInfo* list,
     uint32_t listNum,
     uint32_t* hitNum) {
-    (void)serviceLabel;
-    if (userId == static_cast<SceUserServiceUserId>(-1)) {
-        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    }
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (listNum > SCE_NP_ENTITLEMENT_ACCESS_ADDCONT_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
@@ -2181,20 +2443,16 @@ int32_t dlcEmu_sceNpEntitlementAccessGetAddcontEntitlementInfoListIndividual(
 
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    if (!st.available) {
-        if (hitNum) *hitNum = 0;
-        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
-    }
     uint32_t written = 0;
     for (size_t i = 0; i < st.count; ++i) {
-        if (!st.entries[i].activeFlag) continue;
+        if (!entry_is_addcont(st.entries[i], serviceLabel)) continue;
         if (list && written < listNum) {
             fill_np_info(st.entries[i], &list[written]);
         }
         ++written;
     }
     if (hitNum) *hitNum = written;
-    return written != 0 ? SCE_OK : SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+    return SCE_OK;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessGetPftFlag(
@@ -2210,10 +2468,10 @@ int32_t dlcEmu_sceNpEntitlementAccessGetEntitlementKey(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     SceNpEntitlementAccessEntitlementKey* key) {
-    (void)serviceLabel;
     if (!valid_np_unified_label(entitlementLabel) || !key) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcEntry entry{};
-    if (copy_entry_by_label(entitlementLabel, &entry)) {
+    if (copy_entry_by_label(entitlementLabel, &entry) &&
+        entry_is_addcont(entry, serviceLabel)) {
         std::memcpy(key->data, entry.key, sizeof(entry.key));
         return SCE_OK;
     }
@@ -2242,8 +2500,7 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumeUnifiedEntitlement(
     const SceNpEntitlementAccessTransactionId* transactionId,
     int32_t useCount,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_unified_label(entitlementLabel) ||
         !valid_np_transaction_id(transactionId) ||
         !requestId) {
@@ -2253,8 +2510,16 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumeUnifiedEntitlement(
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     if (const DlcEntry* entry = find_entry_by_label_unlocked(st, entitlementLabel)) {
+        if (!entry_is_unified(*entry, serviceLabel)) {
+            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+        }
         index = static_cast<size_t>(entry - st.entries);
-        const int32_t rc = consume_entry_unlocked(st, index, transactionId, useCount, requestId);
+        const int32_t rc = consume_entry_unlocked(st,
+                                                  index,
+                                                  transactionId,
+                                                  useCount,
+                                                  EntryRequestType::ConsumeUnified,
+                                                  requestId);
         if (rc != SCE_OK) return rc;
         dlc_logf("dlc.unified_info.request.fake label=%s",
                                   entitlementLabel->data);
@@ -2286,8 +2551,7 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumeServiceEntitlement(
     const SceNpEntitlementAccessTransactionId* transactionId,
     int32_t useCount,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_service_label(entitlementLabel) ||
         !valid_np_transaction_id(transactionId) ||
         !requestId) {
@@ -2296,8 +2560,16 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumeServiceEntitlement(
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     if (const DlcEntry* entry = find_entry_by_service_label_unlocked(st, entitlementLabel)) {
+        if (!entry_is_service(*entry, serviceLabel)) {
+            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+        }
         const size_t index = static_cast<size_t>(entry - st.entries);
-        const int32_t rc = consume_entry_unlocked(st, index, transactionId, useCount, requestId);
+        const int32_t rc = consume_entry_unlocked(st,
+                                                  index,
+                                                  transactionId,
+                                                  useCount,
+                                                  EntryRequestType::ConsumeService,
+                                                  requestId);
         if (rc == SCE_OK) {
             dlc_logf("dlc.service_consume.request.fake serviceLabel=%s useCount=%d",
                      entitlementLabel->data,
@@ -2308,19 +2580,23 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumeServiceEntitlement(
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 
-// Poll fake unified-consume requests as completed.
+// Poll a typed consume request and return the remaining use limit captured by it.
 int32_t dlcEmu_sceNpEntitlementAccessPollConsumeEntitlement(
     int64_t requestId,
     int32_t* pResult,
     int32_t* useLimit) {
     if (!pResult || !useLimit) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    DlcEntry entry{};
-    if (copy_entry_by_request(requestId, &entry)) {
-        *pResult = SCE_OK;
-        *useLimit = entry.useLimit;
-        return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    EntryPendingRequest* request = find_entry_request_unlocked(st, requestId);
+    if (!request ||
+        (request->type != EntryRequestType::ConsumeUnified &&
+         request->type != EntryRequestType::ConsumeService)) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
     }
-    return finish_title_token_poll(pResult, useLimit);
+    *pResult = request->aborted ? SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED : SCE_OK;
+    *useLimit = request->aborted ? -1 : request->resultUseLimit;
+    return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
 }
 
 // Request fake unified entitlement info and remember the label in the request id.
@@ -2329,13 +2605,22 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestUnifiedEntitlementInfo(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_unified_label(entitlementLabel) || !requestId) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    size_t index = 0;
-    if (copy_entry_by_label(entitlementLabel, nullptr, &index)) {
-        *requestId = synthetic_request_id_for_index(index);
-        return SCE_OK;
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    if (const DlcEntry* entry = find_entry_by_label_unlocked(st, entitlementLabel)) {
+        if (!entry_is_unified(*entry, serviceLabel)) {
+            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+        }
+        const size_t index = static_cast<size_t>(entry - st.entries);
+        return allocate_entry_request_unlocked(st,
+                                               EntryRequestType::UnifiedInfo,
+                                               index,
+                                               entry->useLimit,
+                                               requestId)
+                   ? SCE_OK
+                   : SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
     }
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
@@ -2346,8 +2631,19 @@ int32_t dlcEmu_sceNpEntitlementAccessPollUnifiedEntitlementInfo(
     int32_t* pResult,
     SceNpEntitlementAccessUnifiedEntitlementInfo* info) {
     if (!pResult || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    DlcEntry entry{};
-    if (copy_entry_by_request(requestId, &entry)) {
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    EntryPendingRequest* request = find_entry_request_unlocked(st, requestId);
+    if (!request || request->type != EntryRequestType::UnifiedInfo) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    }
+    if (request->aborted) {
+        std::memset(info, 0, sizeof(*info));
+        *pResult = SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED;
+        return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    }
+    if (request->entryIndex < st.count) {
+        const DlcEntry& entry = request->snapshot;
         *pResult = SCE_OK;
         fill_unified_info(entry, info);
         dlc_logf("dlc.unified_info.poll.fake label=%s packageType=%s",
@@ -2355,11 +2651,10 @@ int32_t dlcEmu_sceNpEntitlementAccessPollUnifiedEntitlementInfo(
                                   package_type_name(entry.packageType));
         return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
     }
-    *pResult = kNpEntitlementTitleTokenError;
-    return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
 }
 
-// Request-list API succeeds for fake DLC; poll returns the active fake list.
+// Request-list API also succeeds for an empty configured list.
 int32_t dlcEmu_sceNpEntitlementAccessRequestUnifiedEntitlementInfoList(
     SceUserServiceUserId userId,
     SceNpServiceLabel serviceLabel,
@@ -2367,27 +2662,31 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestUnifiedEntitlementInfoList(
     uint32_t listNum,
     const SceNpEntitlementAccessRequestEntitlementInfoListParam* param,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_unified_list_request(list, listNum, param, requestId)) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
-    if (has_fake_dlc()) {
-        const UnifiedListRequest request = make_unified_list_request(param);
-        *requestId = synthetic_list_request_id(request);
-        dlc_logf("dlc.unified_list.request.fake packageType=%s offset=%u limit=%u sort=%u direction=%u",
-                                  package_type_name(request.packageType),
-                                  request.offset,
-                                  request.limit,
-                                  request.sort,
-                                  request.direction);
-        return SCE_OK;
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    const UnifiedListRequest request = make_unified_list_request(param);
+    if (!remember_unified_list_request_unlocked(st,
+                                                serviceLabel,
+                                                request,
+                                                list,
+                                                listNum,
+                                                requestId)) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
     }
-    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+    dlc_logf("dlc.unified_list.request.fake packageType=%s offset=%u limit=%u sort=%u direction=%u",
+                              package_type_name(request.packageType),
+                              request.offset,
+                              request.limit,
+                              request.sort,
+                              request.direction);
+    return SCE_OK;
 }
 
-// Poll-list API reports all dlc_emu.ini entries as active unified
-// entitlements.
+// Poll-list API applies package, service-label and optional entitlement-label filters.
 int32_t dlcEmu_sceNpEntitlementAccessPollUnifiedEntitlementInfoList(
     int64_t requestId,
     int32_t* pResult,
@@ -2400,51 +2699,56 @@ int32_t dlcEmu_sceNpEntitlementAccessPollUnifiedEntitlementInfoList(
     if (listNum == 0 || listNum > SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
-    UnifiedListRequest request{};
-    if (decode_synthetic_list_request_id(requestId, &request)) {
-        DlcState& st = ensure_loaded();
-        DlcLockGuard lock(st.mutex);
-        if (st.available) {
-            size_t indices[kMaxDlcEntries]{};
-            uint32_t written = 0;
-            uint32_t total = 0;
-            for (size_t i = 0; i < st.count; ++i) {
-                if (!entry_matches_package(st.entries[i], request.packageType)) continue;
-                indices[total++] = i;
-            }
-            sort_unified_indices_unlocked(st, indices, total, request);
-
-            const uint32_t pageLimit = request.limit < listNum ? request.limit : listNum;
-            const uint32_t start = request.offset < total ? request.offset : total;
-            const uint32_t available = total - start;
-            const uint32_t toWrite = pageLimit < available ? pageLimit : available;
-            for (uint32_t i = 0; i < toWrite; ++i) {
-                fill_unified_info(st.entries[indices[start + i]], &list[written++]);
-            }
-            if (hitNum) *hitNum = written;
-            const uint32_t next = start + toWrite;
-            *nextOffset = next < total ? static_cast<int32_t>(next) : SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
-            if (start == 0) {
-                *previousOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
-            } else if (pageLimit == 0 || start <= pageLimit) {
-                *previousOffset = 0;
-            } else {
-                *previousOffset = static_cast<int32_t>(start - pageLimit);
-            }
-            *pResult = SCE_OK;
-            dlc_logf("dlc.unified_list.poll.fake packageType=%s offset=%u limit=%u total=%u written=%u next=%d previous=%d",
-                                      package_type_name(request.packageType),
-                                      request.offset,
-                                      request.limit,
-                                      total,
-                                      written,
-                                      *nextOffset,
-                                      *previousOffset);
+    UnifiedListPendingRequest pending{};
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    if (UnifiedListPendingRequest* stored = find_unified_list_request_unlocked(st, requestId)) {
+        pending = *stored;
+        if (pending.aborted) {
+            *pResult = SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED;
+            if (hitNum) *hitNum = 0;
+            *nextOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
+            *previousOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
             return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
         }
+        size_t indices[kMaxDlcEntries]{};
+        uint32_t written = 0;
+        uint32_t total = 0;
+        for (size_t i = 0; i < st.count; ++i) {
+            if (!unified_list_request_matches(pending, st.entries[i])) continue;
+            indices[total++] = i;
+        }
+        sort_unified_indices_unlocked(st, indices, total, pending.request);
+
+        const uint32_t pageLimit = pending.request.limit < listNum ? pending.request.limit : listNum;
+        const uint32_t start = pending.request.offset < total ? pending.request.offset : total;
+        const uint32_t available = total - start;
+        const uint32_t toWrite = pageLimit < available ? pageLimit : available;
+        for (uint32_t i = 0; i < toWrite; ++i) {
+            fill_unified_info(st.entries[indices[start + i]], &list[written++]);
+        }
+        if (hitNum) *hitNum = written;
+        const uint32_t next = start + toWrite;
+        *nextOffset = next < total ? static_cast<int32_t>(next) : SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
+        if (start == 0) {
+            *previousOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
+        } else if (pageLimit == 0 || start <= pageLimit) {
+            *previousOffset = 0;
+        } else {
+            *previousOffset = static_cast<int32_t>(start - pageLimit);
+        }
+        *pResult = SCE_OK;
+        dlc_logf("dlc.unified_list.poll.fake packageType=%s offset=%u limit=%u total=%u written=%u next=%d previous=%d",
+                                  package_type_name(pending.request.packageType),
+                                  pending.request.offset,
+                                  pending.request.limit,
+                                  total,
+                                  written,
+                                  *nextOffset,
+                                  *previousOffset);
+        return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
     }
-    *pResult = kNpEntitlementTitleTokenError;
-    return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessRequestConsumableEntitlementInfo(
@@ -2452,15 +2756,22 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestConsumableEntitlementInfo(
     SceNpServiceLabel serviceLabel,
     const SceNpUnifiedEntitlementLabel* entitlementLabel,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_unified_label(entitlementLabel) || !requestId) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
     if (const DlcEntry* entry = find_entry_by_label_unlocked(st, entitlementLabel)) {
-        if (!entry->consumable) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
-        *requestId = synthetic_request_id_for_index(static_cast<size_t>(entry - st.entries));
-        return SCE_OK;
+        if (!entry_is_unified(*entry, serviceLabel) || !entry->consumable) {
+            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+        }
+        const size_t index = static_cast<size_t>(entry - st.entries);
+        return allocate_entry_request_unlocked(st,
+                                               EntryRequestType::ConsumableInfo,
+                                               index,
+                                               entry->useLimit,
+                                               requestId)
+                   ? SCE_OK
+                   : SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
     }
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
@@ -2469,7 +2780,22 @@ int32_t dlcEmu_sceNpEntitlementAccessPollConsumableEntitlementInfo(
     int64_t requestId,
     int32_t* pResult,
     SceNpEntitlementAccessUnifiedEntitlementInfo* info) {
-    return dlcEmu_sceNpEntitlementAccessPollUnifiedEntitlementInfo(requestId, pResult, info);
+    if (!pResult || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    EntryPendingRequest* request = find_entry_request_unlocked(st, requestId);
+    if (!request || request->type != EntryRequestType::ConsumableInfo) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    }
+    if (request->aborted) {
+        std::memset(info, 0, sizeof(*info));
+        *pResult = SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED;
+        return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    }
+    if (request->entryIndex >= st.count) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    *pResult = SCE_OK;
+    fill_unified_info(request->snapshot, info);
+    return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessRequestServiceEntitlementInfo(
@@ -2477,13 +2803,22 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestServiceEntitlementInfo(
     SceNpServiceLabel serviceLabel,
     const SceNpServiceEntitlementLabel* entitlementLabel,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_service_label(entitlementLabel) || !requestId) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    size_t index = 0;
-    if (copy_entry_by_service_label(entitlementLabel, nullptr, &index)) {
-        *requestId = synthetic_request_id_for_index(index);
-        return SCE_OK;
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    if (const DlcEntry* entry = find_entry_by_service_label_unlocked(st, entitlementLabel)) {
+        if (!entry_is_service(*entry, serviceLabel)) {
+            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
+        }
+        const size_t index = static_cast<size_t>(entry - st.entries);
+        return allocate_entry_request_unlocked(st,
+                                               EntryRequestType::ServiceInfo,
+                                               index,
+                                               entry->useLimit,
+                                               requestId)
+                   ? SCE_OK
+                   : SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
     }
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
@@ -2493,14 +2828,20 @@ int32_t dlcEmu_sceNpEntitlementAccessPollServiceEntitlementInfo(
     int32_t* pResult,
     SceNpEntitlementAccessServiceEntitlementInfo* info) {
     if (!pResult || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
-    DlcEntry entry{};
-    if (copy_entry_by_request(requestId, &entry) && entry.hasServiceLabel) {
-        *pResult = SCE_OK;
-        fill_service_info(entry, info);
+    DlcState& st = ensure_loaded();
+    DlcLockGuard lock(st.mutex);
+    EntryPendingRequest* request = find_entry_request_unlocked(st, requestId);
+    if (!request || request->type != EntryRequestType::ServiceInfo) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    }
+    if (request->aborted) {
+        std::memset(info, 0, sizeof(*info));
+        *pResult = SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED;
         return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
     }
-    if (!is_synthetic_request_id(requestId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
-    *pResult = kNpEntitlementTitleTokenError;
+    if (request->entryIndex >= st.count) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    *pResult = SCE_OK;
+    fill_service_info(request->snapshot, info);
     return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
 }
 
@@ -2511,16 +2852,21 @@ int32_t dlcEmu_sceNpEntitlementAccessRequestServiceEntitlementInfoList(
     uint32_t listNum,
     const SceNpEntitlementAccessRequestEntitlementInfoListParam* param,
     int64_t* requestId) {
-    (void)userId;
-    (void)serviceLabel;
+    if (!valid_np_user_id(userId)) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_USER_NOT_FOUND;
     if (!valid_np_service_list_request(list, listNum, param, requestId)) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
     const ServiceListRequest request = make_service_list_request(param);
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    remember_service_list_request_unlocked(st, request, list, listNum, requestId);
-    return SCE_OK;
+    return remember_service_list_request_unlocked(st,
+                                                  serviceLabel,
+                                                  request,
+                                                  list,
+                                                  listNum,
+                                                  requestId)
+               ? SCE_OK
+               : SCE_NP_ENTITLEMENT_ACCESS_ERROR_BUSY;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessPollServiceEntitlementInfoList(
@@ -2535,34 +2881,31 @@ int32_t dlcEmu_sceNpEntitlementAccessPollServiceEntitlementInfoList(
     if (listNum == 0 || listNum > SCE_NP_ENTITLEMENT_ACCESS_ENTITLEMENT_INFO_LIST_MAX_SIZE) {
         return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
     }
-    ServiceListPendingRequest pending{};
-    {
-        DlcState& st = ensure_loaded();
-        DlcLockGuard lock(st.mutex);
-        ServiceListPendingRequest* stored = find_service_list_request_unlocked(st, requestId);
-        if (!stored) {
-            return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
-        }
-        pending = *stored;
-    }
-
-    if (!pending.used) {
-        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
-    }
-
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
+    ServiceListPendingRequest* pending = find_service_list_request_unlocked(st, requestId);
+    if (!pending || !pending->used) {
+        return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
+    }
+    if (pending->aborted) {
+        *pResult = SCE_NP_ENTITLEMENT_ACCESS_ERROR_ABORTED;
+        if (hitNum) *hitNum = 0;
+        *nextOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
+        *previousOffset = SCE_NP_ENTITLEMENT_ACCESS_INVALID_OFFSET;
+        return SCE_NP_ENTITLEMENT_ACCESS_POLL_RET_FINISHED;
+    }
+
     size_t indices[kMaxDlcEntries]{};
     uint32_t total = 0;
     for (size_t i = 0; i < st.count; ++i) {
-        if (!service_list_request_matches(pending, st.entries[i])) continue;
+        if (!service_list_request_matches(*pending, st.entries[i])) continue;
         indices[total++] = i;
     }
-    sort_service_indices_unlocked(st, indices, total, pending.request);
+    sort_service_indices_unlocked(st, indices, total, pending->request);
 
     uint32_t written = 0;
-    const uint32_t pageLimit = pending.request.limit < listNum ? pending.request.limit : listNum;
-    const uint32_t start = pending.request.offset < total ? pending.request.offset : total;
+    const uint32_t pageLimit = pending->request.limit < listNum ? pending->request.limit : listNum;
+    const uint32_t start = pending->request.offset < total ? pending->request.offset : total;
     const uint32_t available = total - start;
     const uint32_t toWrite = pageLimit < available ? pageLimit : available;
     for (uint32_t i = 0; i < toWrite; ++i) {
@@ -2585,15 +2928,37 @@ int32_t dlcEmu_sceNpEntitlementAccessPollServiceEntitlementInfoList(
 int32_t dlcEmu_sceNpEntitlementAccessDeleteRequest(int64_t requestId) {
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    clear_service_list_request_unlocked(st, requestId);
-    return SCE_OK;
+    if (EntryPendingRequest* request = find_entry_request_unlocked(st, requestId)) {
+        *request = EntryPendingRequest{};
+        return SCE_OK;
+    }
+    if (UnifiedListPendingRequest* request = find_unified_list_request_unlocked(st, requestId)) {
+        *request = UnifiedListPendingRequest{};
+        return SCE_OK;
+    }
+    if (ServiceListPendingRequest* request = find_service_list_request_unlocked(st, requestId)) {
+        *request = ServiceListPendingRequest{};
+        return SCE_OK;
+    }
+    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceNpEntitlementAccessAbortRequest(int64_t requestId) {
     DlcState& st = ensure_loaded();
     DlcLockGuard lock(st.mutex);
-    clear_service_list_request_unlocked(st, requestId);
-    return SCE_OK;
+    if (EntryPendingRequest* request = find_entry_request_unlocked(st, requestId)) {
+        request->aborted = true;
+        return SCE_OK;
+    }
+    if (UnifiedListPendingRequest* request = find_unified_list_request_unlocked(st, requestId)) {
+        request->aborted = true;
+        return SCE_OK;
+    }
+    if (ServiceListPendingRequest* request = find_service_list_request_unlocked(st, requestId)) {
+        request->aborted = true;
+        return SCE_OK;
+    }
+    return SCE_NP_ENTITLEMENT_ACCESS_ERROR_REQUEST_NOT_FOUND;
 }
 
 int32_t dlcEmu_sceGameUpdateInitialize(void) {

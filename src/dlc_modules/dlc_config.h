@@ -6,12 +6,16 @@
 
 #pragma once
 
+#ifndef SCE_DLC_EMU_VERSION
+#define SCE_DLC_EMU_VERSION "0.3"
+#endif
+
 #ifndef SCE_DLC_EMU_LOG
 #define SCE_DLC_EMU_LOG 0
 #endif
 
 #ifndef SCE_DLC_EMU_LOG_KERNEL_OUT
-#define SCE_DLC_EMU_LOG_KERNEL_OUT 0
+#define SCE_DLC_EMU_LOG_KERNEL_OUT 1
 #endif
 
 #ifndef SCE_DLC_EMU_LOG_PATH

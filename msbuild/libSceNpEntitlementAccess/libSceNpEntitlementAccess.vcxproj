@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Prospero">
+      <Configuration>Release</Configuration>
+      <Platform>Prospero</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{EF78D33E-EEB2-46D1-A2F7-05047BC259B7}</ProjectGuid>
+    <ProsperoSdkVersion>2.000</ProsperoSdkVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="..\Dlc.Common.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <TargetName>libSceNpEntitlementAccess</TargetName>
+    <TargetExt>.prx</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>LIBSCENPENTITLEMENTACCESS_IMPL=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>-fPIC %(AdditionalOptions)</AdditionalOptions>
+      <OptimizationLevel>Level3</OptimizationLevel>
+      <NoStrictAliasing>true</NoStrictAliasing>
+      <LinkTimeOptimization>true</LinkTimeOptimization>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(SolutionDir)msbuild\pemd\libSceNpEntitlementAccess.pemd;$(OutDir)libSceIpmi_stub_weak.a;libkernel_stub_weak.a;$(OutDir)libSceLibcInternal_stub_weak.a;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>-Wl,--as-needed -Wl,--oformat=prx -Wl,-soname,libSceNpEntitlementAccess.prx -Wl,-prx-stub-output-dir="$(OutDir)\" %(AdditionalOptions)</AdditionalOptions>
+      <InfoStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">StripSymsAndDebug</InfoStripping>
+      <DataStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">true</DataStripping>
+      <DuplicateStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">true</DuplicateStripping>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\src\dlc_modules\dlc_content.cpp" />
+    <ClCompile Include="..\..\src\dlc_modules\dlc_log.cpp" />
+    <ClCompile Include="..\..\src\dlc_modules\scenpentitlementaccess_exports.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\src\dlc_modules\dlc_config.h" />
+    <ClInclude Include="..\..\src\dlc_modules\dlc_content.h" />
+    <ClInclude Include="..\..\src\dlc_modules\dlc_log.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\pemd\libSceNpEntitlementAccess.pemd" />
+  </ItemGroup>
+  <Target Name="CopyProsperoRuntimeModules" AfterTargets="Build">
+    <MakeDir Directories="$(OutDir)sce_module" />
+    <Copy SourceFiles="$(SolutionDir)libSceLibcInternal.sprx" DestinationFolder="$(OutDir)sce_module" Condition="Exists('$(SolutionDir)libSceLibcInternal.sprx')" SkipUnchangedFiles="true" Retries="10" RetryDelayMilliseconds="250" />
+    <Copy SourceFiles="$(OutDir)libSceNpEntitlementAccess.prx" DestinationFolder="$(OutDir)sce_module" SkipUnchangedFiles="true" Retries="10" RetryDelayMilliseconds="250" />
+  </Target>
+  <Target Name="GenerateLibSceNpEntitlementAccessSprx" AfterTargets="Build" Inputs="$(OutDir)libSceNpEntitlementAccess.prx;$(SolutionDir)tools\make_fself.py" Outputs="$(OutDir)libSceNpEntitlementAccess.sprx">
+    <Message Importance="High" Text="Generating $(OutDir)libSceNpEntitlementAccess.sprx from $(OutDir)libSceNpEntitlementAccess.prx" />
+    <Exec WorkingDirectory="$(SolutionDir)" Command="python &quot;$(SolutionDir)tools\make_fself.py&quot; &quot;$(OutDir)libSceNpEntitlementAccess.prx&quot; &quot;$(OutDir)libSceNpEntitlementAccess.sprx&quot;" />
+  </Target>
+  <Import Condition="'$(ConfigurationType)' == 'Makefile' and Exists('$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets')" Project="$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

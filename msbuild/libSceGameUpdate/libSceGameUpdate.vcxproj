@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Prospero">
+      <Configuration>Release</Configuration>
+      <Platform>Prospero</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B7FE1D30-3F21-4F5F-A644-79189830F98F}</ProjectGuid>
+    <ProsperoSdkVersion>2.000</ProsperoSdkVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="..\Dlc.Common.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <TargetName>libSceGameUpdate</TargetName>
+    <TargetExt>.prx</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>LIBSCEGAMEUPDATE_IMPL=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>-fPIC %(AdditionalOptions)</AdditionalOptions>
+      <OptimizationLevel>Level3</OptimizationLevel>
+      <NoStrictAliasing>true</NoStrictAliasing>
+      <LinkTimeOptimization>true</LinkTimeOptimization>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(SolutionDir)msbuild\pemd\libSceGameUpdate.pemd;$(OutDir)libSceIpmi_stub_weak.a;libkernel_stub_weak.a;$(OutDir)libSceLibcInternal_stub_weak.a;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>-Wl,--as-needed -Wl,--oformat=prx -Wl,-soname,libSceGameUpdate.prx -Wl,-prx-stub-output-dir="$(OutDir)\" %(AdditionalOptions)</AdditionalOptions>
+      <InfoStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">StripSymsAndDebug</InfoStripping>
+      <DataStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">true</DataStripping>
+      <DuplicateStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">true</DuplicateStripping>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\src\dlc_modules\dlc_content.cpp" />
+    <ClCompile Include="..\..\src\dlc_modules\dlc_log.cpp" />
+    <ClCompile Include="..\..\src\dlc_modules\scegameupdate_exports.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\src\dlc_modules\dlc_config.h" />
+    <ClInclude Include="..\..\src\dlc_modules\dlc_content.h" />
+    <ClInclude Include="..\..\src\dlc_modules\dlc_log.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\pemd\libSceGameUpdate.pemd" />
+  </ItemGroup>
+  <Target Name="CopyProsperoRuntimeModules" AfterTargets="Build">
+    <MakeDir Directories="$(OutDir)sce_module" />
+    <Copy SourceFiles="$(SolutionDir)libSceLibcInternal.sprx" DestinationFolder="$(OutDir)sce_module" Condition="Exists('$(SolutionDir)libSceLibcInternal.sprx')" SkipUnchangedFiles="true" Retries="10" RetryDelayMilliseconds="250" />
+    <Copy SourceFiles="$(OutDir)libSceGameUpdate.prx" DestinationFolder="$(OutDir)sce_module" SkipUnchangedFiles="true" Retries="10" RetryDelayMilliseconds="250" />
+  </Target>
+  <Target Name="GenerateLibSceGameUpdateSprx" AfterTargets="Build" Inputs="$(OutDir)libSceGameUpdate.prx;$(SolutionDir)tools\make_fself.py" Outputs="$(OutDir)libSceGameUpdate.sprx">
+    <Message Importance="High" Text="Generating $(OutDir)libSceGameUpdate.sprx from $(OutDir)libSceGameUpdate.prx" />
+    <Exec WorkingDirectory="$(SolutionDir)" Command="python &quot;$(SolutionDir)tools\make_fself.py&quot; &quot;$(OutDir)libSceGameUpdate.prx&quot; &quot;$(OutDir)libSceGameUpdate.sprx&quot;" />
+  </Target>
+  <Import Condition="'$(ConfigurationType)' == 'Makefile' and Exists('$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets')" Project="$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

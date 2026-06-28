@@ -1,0 +1,29 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37301.10 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libSceAppContent", "msbuild\libSceAppContent\libSceAppContent.vcxproj", "{81B3702A-2B72-4BFB-8132-566D22DF9764}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libSceNpEntitlementAccess", "msbuild\libSceNpEntitlementAccess\libSceNpEntitlementAccess.vcxproj", "{EF78D33E-EEB2-46D1-A2F7-05047BC259B7}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libSceGameUpdate", "msbuild\libSceGameUpdate\libSceGameUpdate.vcxproj", "{B7FE1D30-3F21-4F5F-A644-79189830F98F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		ReleaseHooks|Prospero = ReleaseHooks|Prospero
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{81B3702A-2B72-4BFB-8132-566D22DF9764}.ReleaseHooks|Prospero.ActiveCfg = Release|Prospero
+		{81B3702A-2B72-4BFB-8132-566D22DF9764}.ReleaseHooks|Prospero.Build.0 = Release|Prospero
+		{EF78D33E-EEB2-46D1-A2F7-05047BC259B7}.ReleaseHooks|Prospero.ActiveCfg = Release|Prospero
+		{EF78D33E-EEB2-46D1-A2F7-05047BC259B7}.ReleaseHooks|Prospero.Build.0 = Release|Prospero
+		{B7FE1D30-3F21-4F5F-A644-79189830F98F}.ReleaseHooks|Prospero.ActiveCfg = Release|Prospero
+		{B7FE1D30-3F21-4F5F-A644-79189830F98F}.ReleaseHooks|Prospero.Build.0 = Release|Prospero
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {76D7B4AB-3A7C-489D-93D4-412D341C2E4D}
+	EndGlobalSection
+EndGlobal
