@@ -36,7 +36,7 @@
       <LinkTimeOptimization>true</LinkTimeOptimization>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)msbuild\pemd\libSceAppContent.pemd;$(OutDir)libSceIpmi_stub_weak.a;libkernel_stub_weak.a;$(OutDir)libSceLibcInternal_stub_weak.a;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)msbuild\pemd\libSceAppContent.pemd;$(OutDir)libSceIpmi_stub_weak.a;libkernel_stub_weak.a;$(OutDir)libkernel_extra_stub_weak.a;$(OutDir)libSceLibcInternal_stub_weak.a;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>-Wl,--as-needed -Wl,--oformat=prx -Wl,-soname,libSceAppContent.prx -Wl,-prx-stub-output-dir="$(OutDir)\" %(AdditionalOptions)</AdditionalOptions>
       <InfoStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">StripSymsAndDebug</InfoStripping>
       <DataStripping Condition="'$(Configuration)|$(Platform)'=='Release|Prospero'">true</DataStripping>
