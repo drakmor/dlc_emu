@@ -39,6 +39,18 @@ STUBS = {
             ("_ZN4IPMI6Client6createEPPS0_PKNS0_6ConfigEPvS6_", STT_FUNC),
         ],
     },
+    # sceKernelGetProsperoSystemSwVersion is missing from the SDK's
+    # libkernel_stub_weak.a (it is absent from the public headers too), but
+    # libkernel.sprx exports it on every firmware from 1.00 onward, so only the
+    # link stub is missing. ps5-payload-sdk declares it the same way.
+    "kernel": {
+        "soname": "libkernel.prx",
+        "module": "libkernel",
+        "library": "libkernel",
+        "symbols": [
+            ("sceKernelGetProsperoSystemSwVersion", STT_FUNC),
+        ],
+    },
     "libc-internal": {
         "soname": "libSceLibcInternal.prx",
         "module": "libSceLibcInternal",

@@ -336,6 +336,37 @@ uint32_t compiled_sdk_version() {
     return SCE_PROSPERO_SDK_VERSION;
 }
 
+// RUNNING firmware, unlike compiled_sdk_version() which is a build-time constant.
+// Undeclared by the public SDK; shape read off fw 4.03's libkernel_sys. Reads
+// sysctl kern.sdk_version, so (version >> 16) is 0x0403 for 4.03. Exists since 1.00.
+struct SceKernelSwVersionRaw {
+    uint64_t unknown0;
+    char     str[0x1c];
+    uint32_t version;       // +0x24
+};
+static_assert(sizeof(SceKernelSwVersionRaw) == 0x28u, "must match the out-param");
+
+extern "C" int sceKernelGetProsperoSystemSwVersion(SceKernelSwVersionRaw* version);
+
+uint32_t system_sw_version() {
+    // Benign race: concurrent callers store the same value, so no lock is needed.
+    static uint32_t cached = 0xffffffffu;
+    if (cached == 0xffffffffu) {
+        SceKernelSwVersionRaw v{};
+        cached = (sceKernelGetProsperoSystemSwVersion(&v) == SCE_OK) ? v.version : 0u;
+    }
+    return cached;
+}
+
+// The fw 5.02 additions: a third download-data area and its block-size query
+// (RPC 0x20010, 0x20023, 0x20024). Must be decided BEFORE the call -- the invoke
+// is synchronous with no timeout, so an unimplemented command wedges the thread
+// until the watchdog reboots. Unreadable version counts as absent: a graceful
+// NOT_SUPPORTED beats an unrecoverable reboot.
+bool firmware_has_download2() {
+    return (system_sw_version() >> 16) >= 0x0502u;
+}
+
 bool ensure_rpc_unlocked(RpcClientState& rpc,
                          const char* logTag,
                          const char serviceName[16],
@@ -2169,15 +2200,15 @@ int32_t dlcEmu_sceAppContentCheckBundleLicenseOnDisc(
 
 int32_t dlcEmu_sceAppContentDownload2Shrink(const void* downloadHandle) {
     if (!downloadHandle) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    // The value is an opaque download-data handle despite the pointer-shaped ABI.
-    // Do not dereference it as a mount-point structure.
+    // A SIZE in MiB passed by value, despite the pointer-shaped ABI. Never deref.
+    if (!firmware_has_download2()) return SCE_APP_CONTENT_ERROR_NOT_SUPPORTED;
     return app_rpc_mount_handle_command(kAppContentRpcCommandDownload2Shrink, downloadHandle);
 }
 
 int32_t dlcEmu_sceAppContentDownload2Expand(const void* downloadHandle) {
     if (!downloadHandle) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    // The value is an opaque download-data handle despite the pointer-shaped ABI.
-    // Do not dereference it as a mount-point structure.
+    // See Download2Shrink: a size in MiB, not a handle.
+    if (!firmware_has_download2()) return SCE_APP_CONTENT_ERROR_NOT_SUPPORTED;
     return app_rpc_mount_handle_command(kAppContentRpcCommandDownload2Expand, downloadHandle);
 }
 
@@ -2248,6 +2279,9 @@ int32_t dlcEmu_sceAppContentDownloadDataGetBlockSize(
     const SceAppContentMountPoint* mountPoint,
     size_t* blockSize) {
     if (!mountPoint || !blockSize) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    // Also fw 5.02. *blockSize deliberately left unwritten: a negative Sce error
+    // means out-params are not read, which is the firmware's own contract.
+    if (!firmware_has_download2()) return SCE_APP_CONTENT_ERROR_NOT_SUPPORTED;
     return app_rpc_mount_query(kAppContentRpcCommandDownloadDataGetBlockSize,
                                0u,
                                mountPoint,

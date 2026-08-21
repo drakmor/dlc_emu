@@ -31,6 +31,8 @@
           Command="python &quot;$(SolutionDir)tools\make_dlc_ipmi_stub.py&quot; --library ipmi --out &quot;$(OutDir)libSceIpmi_stub_weak.a&quot;" />
     <Exec WorkingDirectory="$(SolutionDir)"
           Command="python &quot;$(SolutionDir)tools\make_dlc_ipmi_stub.py&quot; --library libc-internal --out &quot;$(OutDir)libSceLibcInternal_stub_weak.a&quot;" />
+    <Exec WorkingDirectory="$(SolutionDir)"
+          Command="python &quot;$(SolutionDir)tools\make_dlc_ipmi_stub.py&quot; --library kernel --out &quot;$(OutDir)libkernel_extra_stub_weak.a&quot;" />
   </Target>
 
   <Target Name="RenameRawPrxNids" AfterTargets="Link" Condition="'$(DlcNidMap)' != ''">
