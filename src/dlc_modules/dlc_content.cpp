@@ -249,9 +249,30 @@ std::atomic<uint32_t> g_stateInit{0};
 std::atomic<uint64_t> g_transactionCounter{0};
 GameUpdateState g_gameUpdateState;
 
-struct IpcBuffer {
+// The IN and OUT descriptors are NOT the same width. IN is {data, size} =
+// 0x10. OUT is {data, capacity, written} = 0x18, and the number of bytes
+// actually delivered is written into `written` on every invoke that is
+// answered.
+//
+// A 16-byte OUT descriptor does not fail. The call succeeds, and those eight
+// bytes go into whatever the compiler placed next in the frame. MEASURED on
+// hardware: with logging compiled out, the slot after `outputs[0]` in
+// app_rpc_initialize was the pushed `rbx` of that frame, so the caller got
+// SCE_OK back with its own `rbx` replaced by 0x28 -- the delivered byte count,
+// which is sizeof(SceAppContentBootParam). That caller kept its stack-guard
+// pointer in `rbx`, so its next dereference faulted at address 0x28, every
+// launch. The same source built with logging placed a dead local in that slot
+// instead and ran fine, which is why this presented as a logging-dependent
+// crash rather than as a bad descriptor.
+struct IpcInBuffer {
     void* data;
     uint64_t size;
+};
+
+struct IpcOutBuffer {
+    void* data;
+    uint64_t capacity;
+    uint64_t written;
 };
 
 struct AppContentRpcControl {
@@ -263,7 +284,7 @@ using IpmiConfigCtor = void (*)(void*);
 using IpmiClientCreate = int32_t (*)(void**, const void*, void*, void*);
 using IpmiClientConnect = int32_t (*)(void*, uint64_t, uint64_t, int32_t*);
 using IpmiClientInvoke = int32_t (*)(
-    void*, uint32_t, const IpcBuffer*, uint32_t, int32_t*, IpcBuffer*, uint32_t);
+    void*, uint32_t, const IpcInBuffer*, uint32_t, int32_t*, IpcOutBuffer*, uint32_t);
 
 extern "C" void ipmi_client_config_ctor(void*) __asm__("_ZN4IPMI6Client6ConfigC1Ev");
 extern "C" int32_t ipmi_client_create(void**, const void*, void*, void*)
@@ -469,9 +490,9 @@ int32_t map_app_rpc_result(int32_t rc) {
 }
 
 int32_t app_rpc_invoke(uint32_t command,
-                       const IpcBuffer* input,
+                       const IpcInBuffer* input,
                        uint32_t inputCount,
-                       IpcBuffer* output,
+                       IpcOutBuffer* output,
                        uint32_t outputCount) {
     DlcLockGuard lock(g_appRpc.mutex);
     if (!ensure_app_rpc_unlocked()) {
@@ -486,9 +507,9 @@ int32_t app_rpc_invoke(uint32_t command,
 }
 
 [[maybe_unused]] int32_t np_rpc_invoke(uint32_t command,
-                                       const IpcBuffer* input,
+                                       const IpcInBuffer* input,
                                        uint32_t inputCount,
-                                       IpcBuffer* output,
+                                       IpcOutBuffer* output,
                                        uint32_t outputCount) {
     DlcLockGuard lock(g_npRpc.mutex);
     if (!ensure_np_rpc_unlocked()) {
@@ -506,11 +527,11 @@ int32_t app_rpc_initialize(const SceAppContentInitParam* initParam,
                            SceAppContentBootParam* bootParam) {
     const uint32_t sdkVersion = compiled_sdk_version();
     AppContentRpcControl control{sdkVersion, 0};
-    IpcBuffer inputs[2] = {
+    IpcInBuffer inputs[2] = {
         {&control, sizeof(control.value)},
         {const_cast<SceAppContentInitParam*>(initParam), sizeof(*initParam)}
     };
-    IpcBuffer outputs[1] = {{bootParam, sizeof(*bootParam)}};
+    IpcOutBuffer outputs[1] = {{bootParam, sizeof(*bootParam), 0}};
     return app_rpc_invoke(kAppContentRpcCommandInitialize,
                           inputs,
                           2,
@@ -519,14 +540,14 @@ int32_t app_rpc_initialize(const SceAppContentInitParam* initParam,
 }
 
 int32_t app_rpc_u32_output(uint32_t command, uint32_t* value) {
-    IpcBuffer outputs[1] = {{value, sizeof(*value)}};
+    IpcOutBuffer outputs[1] = {{value, sizeof(*value), 0}};
     return app_rpc_invoke(command, nullptr, 0, outputs, 1);
 }
 
 int32_t app_rpc_control_output(uint32_t command, uint32_t value, void* output, uint64_t outputSize) {
     AppContentRpcControl control{value, 0};
-    IpcBuffer inputs[1] = {{&control, sizeof(control.value)}};
-    IpcBuffer outputs[1] = {{output, outputSize}};
+    IpcInBuffer inputs[1] = {{&control, sizeof(control.value)}};
+    IpcOutBuffer outputs[1] = {{output, outputSize, 0}};
     return app_rpc_invoke(command, inputs, 1, outputs, 1);
 }
 
@@ -536,13 +557,13 @@ int32_t app_rpc_app_param_string(SceAppContentAppParamId paramId, char* value, s
         uint32_t reserved;
         uint64_t valueSize;
     } input{static_cast<uint32_t>(paramId), 0, static_cast<uint64_t>(valueSize)};
-    IpcBuffer inputs[1] = {{&input, sizeof(input)}};
-    IpcBuffer outputs[1] = {{value, static_cast<uint64_t>(valueSize)}};
+    IpcInBuffer inputs[1] = {{&input, sizeof(input)}};
+    IpcOutBuffer outputs[1] = {{value, static_cast<uint64_t>(valueSize), 0}};
     return app_rpc_invoke(kAppContentRpcCommandAppParamGetString, inputs, 1, outputs, 1);
 }
 
 int32_t app_rpc_string_input(uint32_t command, const char* value) {
-    IpcBuffer inputs[1] = {{const_cast<char*>(value), std::strlen(value) + 1u}};
+    IpcInBuffer inputs[1] = {{const_cast<char*>(value), std::strlen(value) + 1u}};
     return app_rpc_invoke(command, inputs, 1, nullptr, 0);
 }
 
@@ -550,13 +571,13 @@ int32_t app_rpc_mount(uint32_t command,
                       uint32_t option,
                       SceAppContentMountPoint* mountPoint) {
     AppContentRpcControl control{option, 0};
-    IpcBuffer input[1] = {{&control, sizeof(control.value)}};
-    IpcBuffer output[1] = {{mountPoint, sizeof(*mountPoint)}};
+    IpcInBuffer input[1] = {{&control, sizeof(control.value)}};
+    IpcOutBuffer output[1] = {{mountPoint, sizeof(*mountPoint), 0}};
     return app_rpc_invoke(command, input, 1, output, 1);
 }
 
 int32_t app_rpc_mount_operation(uint32_t command, const SceAppContentMountPoint* mountPoint) {
-    IpcBuffer input[1] = {{const_cast<SceAppContentMountPoint*>(mountPoint), sizeof(*mountPoint)}};
+    IpcInBuffer input[1] = {{const_cast<SceAppContentMountPoint*>(mountPoint), sizeof(*mountPoint)}};
     return app_rpc_invoke(command, input, 1, nullptr, 0);
 }
 
@@ -565,17 +586,17 @@ int32_t app_rpc_mount_query(uint32_t command,
                             const SceAppContentMountPoint* mountPoint,
                             size_t* value) {
     AppContentRpcControl control{selector, 0};
-    IpcBuffer inputs[2] = {
+    IpcInBuffer inputs[2] = {
         {&control, sizeof(control.value)},
         {const_cast<SceAppContentMountPoint*>(mountPoint), sizeof(*mountPoint)}
     };
-    IpcBuffer outputs[1] = {{value, sizeof(*value)}};
+    IpcOutBuffer outputs[1] = {{value, sizeof(*value), 0}};
     return app_rpc_invoke(command, inputs, 2, outputs, 1);
 }
 
 int32_t app_rpc_mount_handle_command(uint32_t command, const void* downloadHandle) {
     uint64_t handle = reinterpret_cast<uint64_t>(downloadHandle);
-    IpcBuffer input[1] = {{&handle, sizeof(handle)}};
+    IpcInBuffer input[1] = {{&handle, sizeof(handle)}};
     return app_rpc_invoke(command, input, 1, nullptr, 0);
 }
 
